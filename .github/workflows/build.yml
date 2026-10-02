@@ -1,0 +1,57 @@
+# Builds the Mac .dmg and the Windows installer .exe on GitHub's machines.
+# Runs on every push to main, or by hand from the Actions tab.
+# Pushing a tag like v1.0.0 also publishes both files as a GitHub Release.
+name: Build apps
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+
+      - name: Build Mac app + DMG
+        if: runner.os == 'macOS'
+        run: ./build_mac.sh
+
+      - name: Build Windows app
+        if: runner.os == 'Windows'
+        run: |
+          pip install -r requirements.txt -r requirements-build.txt
+          pyinstaller --noconfirm "Stobite Compact.spec"
+
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          $env:APP_VERSION = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "1.0.0" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\windows.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Stobite-Compact-${{ runner.os }}
+          path: |
+            dist/*.dmg
+            dist/*Setup.exe
+
+      - name: Publish release (tags only)
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/*Setup.exe

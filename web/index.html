@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0e0f11">
+<title>Stobite Compact</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><span class="logo">S</span><span class="brand-name">Stobite <b>Compact</b></span></div>
+  <div class="transport">
+    <button class="tbtn" id="btnHome" title="Go to start (Home)">⏮</button>
+    <button class="tbtn" id="btnBack" title="Back 5s (,)">⏪</button>
+    <button class="tbtn play" id="btnPlay" title="Play / Stop (Space)">▶</button>
+    <button class="tbtn" id="btnStop" title="Stop">■</button>
+    <button class="tbtn rec" id="btnRec" title="Record all armed channels (R)">●</button>
+    <button class="tbtn" id="btnFwd" title="Forward 5s (.)">⏩</button>
+    <button class="tbtn loop" id="btnLoop" title="Loop the selected range (L)">⟳</button>
+    <div class="clock" id="clock">00:00:00.000</div>
+  </div>
+  <nav class="tabs" id="tabs">
+    <button data-view="edit" class="on">Edit</button>
+    <button data-view="mixer">Mixer</button>
+    <button data-view="master">Master</button>
+    <button data-view="console">WING</button>
+    <button data-view="setup">Setup</button>
+  </nav>
+  <div class="status">
+    <span class="pill" id="sessName">—</span>
+    <span class="pill cpu" id="cpu" title="Audio engine load">CPU 0%</span>
+    <span class="dot" id="audioDot" title="Audio engine"></span>
+    <span class="dot" id="netDot" title="Connection"></span>
+  </div>
+</header>
+
+<main>
+  <!-- ======================= EDIT ======================= -->
+  <section id="view-edit" class="view on">
+    <div class="toolbar">
+      <div class="seg" id="tools">
+        <button data-tool="select" class="on" title="Select / move / trim (V)">Pointer</button>
+        <button data-tool="blade" title="Split clips where you click (B)">Blade</button>
+        <button data-tool="range" title="Drag a time range across tracks (G)">Range</button>
+      </div>
+      <button class="btn" id="btnSplit" title="Split at playhead (S)">Split at playhead</button>
+      <button class="btn" id="btnDelete" title="Delete selection (⌫)">Delete</button>
+      <label class="chk" title="Deleting a range closes the gap"><input type="checkbox" id="ripple" checked> Ripple</label>
+      <button class="btn" id="btnMarker" title="Add marker (M)">+ Marker</button>
+      <span class="sep"></span>
+      <button class="btn icon" id="btnUndo" title="Undo (⌘Z)">↶</button>
+      <button class="btn icon" id="btnRedo" title="Redo (⇧⌘Z)">↷</button>
+      <span class="sep"></span>
+      <button class="btn icon" id="zoomOut" title="Zoom out (-)">−</button>
+      <button class="btn icon" id="zoomFit" title="Zoom to fit (0)">⤢</button>
+      <button class="btn icon" id="zoomIn" title="Zoom in (+)">+</button>
+      <select id="trackH" title="Track height"><option value="34">Small</option><option value="54" selected>Medium</option><option value="84">Large</option></select>
+      <label class="chk" title="Hide tracks with no audio"><input type="checkbox" id="hideEmpty"> Used tracks only</label>
+      <select id="autoView" title="Show and draw automation (A)">
+        <option value="">Automation: hidden</option>
+        <option value="fader">Automation: Volume</option>
+        <option value="pan">Automation: Pan</option>
+        <option value="mute">Automation: Mute</option>
+      </select>
+      <span class="grow"></span>
+      <button class="btn" id="btnImport">Import audio</button>
+      <button class="btn accent" id="btnExport">Export…</button>
+      <input type="file" id="importFile" accept="audio/*,.wav,.aif,.aiff,.flac,.mp3" hidden multiple>
+    </div>
+    <div class="timeline">
+      <div class="theads-wrap">
+        <div class="thead-top">
+          <button class="mini" id="armAll" title="Arm/disarm all for recording">Arm all</button>
+        </div>
+        <div class="theads" id="theads"></div>
+      </div>
+      <div class="tcanvas-wrap" id="tcwrap">
+        <canvas id="tcanvas"></canvas>
+      </div>
+    </div>
+    <div class="clipbar" id="clipbar"></div>
+  </section>
+
+  <!-- ======================= MIXER ======================= -->
+  <section id="view-mixer" class="view">
+    <div class="toolbar">
+      <div class="seg" id="mixBank"></div>
+      <span class="sep"></span>
+      <button class="btn" id="btnScenes">Scenes…</button>
+      <label class="chk"><input type="checkbox" id="showSends" checked> Sends</label>
+      <span class="grow"></span>
+      <span class="hint" id="soloHint"></span>
+    </div>
+    <div class="mixer">
+      <div class="strips" id="strips"></div>
+      <div class="strips fixed" id="mstrips"></div>
+    </div>
+  </section>
+
+  <!-- ======================= MASTER ======================= -->
+  <section id="view-master" class="view">
+    <div class="master-grid" id="masterView"></div>
+  </section>
+
+  <!-- ======================= CONSOLE ======================= -->
+  <section id="view-console" class="view">
+    <div class="toolbar">
+      <div class="seg" id="wingBank">
+        <button data-bank="ch" class="on">Ch 1–40</button>
+        <button data-bank="aux">Aux</button>
+        <button data-bank="bus">Bus</button>
+        <button data-bank="main">Main</button>
+      </div>
+      <span class="grow"></span>
+      <span class="hint" id="wingState">Not connected</span>
+      <button class="btn" id="wingFind">Find WING</button>
+      <input id="wingIp" placeholder="WING IP e.g. 192.168.1.62" size="18">
+      <button class="btn accent" id="wingConnect">Connect</button>
+    </div>
+    <div class="wing-note">These faders move the <b>WING console itself</b> over the network — no delay, the room hears it instantly. Use this when you step outside to fix the room mix.</div>
+    <div class="wing-strips" id="wingStrips"></div>
+  </section>
+
+  <!-- ======================= SETUP ======================= -->
+  <section id="view-setup" class="view">
+    <div class="setup" id="setup"></div>
+  </section>
+</main>
+
+<!-- channel editor -->
+<div class="sheet" id="editor" hidden>
+  <div class="sheet-head">
+    <button class="btn icon" id="edPrev" title="Previous channel">‹</button>
+    <input class="ed-name" id="edName">
+    <button class="btn icon" id="edNext" title="Next channel">›</button>
+    <span class="grow"></span>
+    <button class="btn" id="edCopy">Copy</button>
+    <button class="btn" id="edPaste">Paste</button>
+    <button class="btn" id="edReset">Reset</button>
+    <button class="btn icon" id="edClose">✕</button>
+  </div>
+  <div class="sheet-body" id="edBody"></div>
+</div>
+
+<div class="modal" id="modal" hidden><div class="modal-card" id="modalCard"></div></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/widgets.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/timeline.js"></script>
+<script src="/static/mixer.js"></script>
+<script src="/static/master.js"></script>
+<script src="/static/console.js"></script>
+<script src="/static/setup.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+numpy>=2.0
+scipy>=1.13
+sounddevice>=0.5
+soundfile>=0.12
+aiohttp>=3.9
+pedalboard>=0.9
+pywebview>=5.0
