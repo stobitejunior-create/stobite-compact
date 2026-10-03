@@ -598,6 +598,8 @@
   wrap.addEventListener('drop', async e => {
     if (!e.dataTransfer.files.length) return;
     e.preventDefault(); wrap.classList.remove('dropping');
+    const proj = [...e.dataTransfer.files].find(f => f.name.endsWith('.stobite'));
+    if (proj) return importProject(proj);
     const rect = canvas.getBoundingClientRect();
     const r = clamp(rowAt(e.clientY - rect.top), 0, Math.max(chanRows - 1, 0));
     let track = vis[r] ?? 0;
@@ -616,7 +618,16 @@
 
   // ---------------------------------------------------------- import / export
   $('#btnImport').onclick = () => $('#importFile').click();
+  window.importProject = async f => {
+    if (!confirm(`Open the project “${f.name}”? It is copied into your sessions and opened (the current session is saved first).`)) return;
+    const fd = new FormData(); fd.append('file', f, f.name);
+    toast('Opening project ' + f.name + '… (large projects take a moment)');
+    const r = await tryApi('project-import', fd);
+    toast('Opened project ' + r.name);
+  };
   $('#importFile').onchange = async e => {
+    const proj = [...e.target.files].find(f => f.name.endsWith('.stobite'));
+    if (proj) { e.target.value = ''; return importProject(proj); }
     for (const f of e.target.files) {
       const fd = new FormData(); fd.append('file', f, f.name);
       toast('Importing ' + f.name + '…');
@@ -629,7 +640,8 @@
 
   window.openExport = function (start, end, target) {
     modal((card, close) => {
-      const kind = h('select', {}, h('option', { value: 'mix' }, 'Stereo mix (with all mixer effects)'), h('option', { value: 'tracks' }, 'Separate tracks — open in Logic / Pro Tools / Cubase'));
+      const kind = h('select', {}, h('option', { value: 'mix' }, 'Stereo mix (with all mixer effects)'), h('option', { value: 'tracks' }, 'Separate tracks — open in Logic / Pro Tools / Cubase'),
+        h('option', { value: 'project' }, 'Project file (.stobite) — every recording + the whole mix, to open on another computer'));
       const f = h('select', {}, h('option', { value: 'wav' }, 'WAV 24-bit'), h('option', { value: 'mp3' }, 'MP3'));
       const loud = h('select', {}, h('option', { value: '' }, 'Off — keep mixer level'),
         ...[[-14, 'Streaming / YouTube / livestream (−14 LUFS)'], [-16, 'Apple Music / podcasts (−16 LUFS)'], [-18, 'Gentle / dynamic (−18 LUFS)'], [-23, 'Broadcast EBU R128 (−23 LUFS)']]
@@ -638,14 +650,17 @@
       const out = h('div');
       const go = h('button', { class: 'btn accent' }, 'Export');
       const loudRow = h('div', { class: 'f' }, h('span', {}, 'Loudness'), loud);
-      kind.onchange = () => { f.disabled = kind.value === 'tracks'; loudRow.style.display = kind.value === 'tracks' ? 'none' : ''; };
+      kind.onchange = () => { f.disabled = kind.value !== 'mix'; loudRow.style.display = kind.value === 'mix' ? '' : 'none'; };
       card.append(h('h3', {}, 'Export'),
         h('p', { class: 'hint' }, start != null ? `Range ${tc(start)} → ${tc(end)}` : 'Whole session (all clips, with edits applied).'),
         h('div', { class: 'card' }, h('div', { class: 'f' }, h('span', {}, 'What'), kind), h('div', { class: 'f' }, h('span', {}, 'Format'), f), loudRow),
         prog, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
       go.onclick = async () => {
         go.disabled = true;
-        try { await api('export', { kind: kind.value, fmt: f.value, start, end, target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value }); }
+        try {
+          if (kind.value === 'project') await api('project-export', {});
+          else await api('export', { kind: kind.value, fmt: f.value, start, end, target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value });
+        }
         catch (e) { out.innerHTML = ''; out.append(h('p', { class: 'err' }, e.message)); go.disabled = false; return; }
         const offM = (m) => { if (m.ex != null) prog.firstChild.style.width = (m.ex * 100) + '%'; };
         on('meters', offM);
@@ -656,7 +671,8 @@
           const local = ['localhost', '127.0.0.1'].includes(location.hostname);
           out.append(h('p', { class: 'ok' }, 'Done: ' + job.file),
             job.lufs != null && job.kind === 'mix' ? h('p', { class: 'hint' }, `Final loudness ${job.lufs} LUFS` + (job.gain != null ? ` (measured ${job.measured}, adjusted ${job.gain > 0 ? '+' : ''}${job.gain} dB)` : '')) : null,
-            job.kind === 'mix' ? h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(job.file), style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Download') : null,
+            job.kind === 'project' ? h('p', { class: 'hint' }, 'Copy this one file to a USB stick or cloud drive. On the other computer: Edit → Import, or drag it onto the timeline.') : null,
+            job.kind !== 'tracks' ? h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(job.file), style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Download') : null,
             local ? h('button', { class: 'btn', style: 'margin-left:6px', onclick: () => api('reveal', undefined, '?what=export') }, 'Show in folder') : null);
         });
       };

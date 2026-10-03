@@ -458,3 +458,22 @@ details summary { cursor: pointer; color: var(--dim); }
 .tune-meter { position: relative; height: 10px; background: var(--bg); border-radius: 5px; }
 .tune-meter b { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: var(--dim); }
 .tune-meter i { position: absolute; top: 1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--faint); left: 50%; transition: left .12s var(--ease), background .2s; }
+
+/* processing chains */
+.chainpanel { grid-column: 1 / -1; }
+.chain-item .cnum, .panel h4 .cnum { width: 20px; height: 20px; border-radius: 50%; background: var(--bg4); color: var(--accent2); display: inline-grid; place-items: center; font-size: 11px; flex: none; }
+.chain-item { transition: opacity .15s, box-shadow .15s; }
+.chain-item.off { opacity: .55; }
+.chain-item.dragging { opacity: .35; }
+.chain-item.dropto { box-shadow: inset 0 3px 0 var(--accent); }
+.chain-item .n { cursor: pointer; }
+.chain-item .mini.danger { color: #ff9a9c; }
+.addmod { max-width: 280px; }
+.panel.module.off { opacity: .6; }
+.panel.module h4 .modread { margin-left: 4px; }
+.maplist { display: flex; flex-direction: column; gap: 4px; max-height: 48vh; overflow: auto; }
+.maprow { display: grid; grid-template-columns: 20px minmax(110px, 160px) 1fr 16px minmax(150px, 210px); align-items: center; gap: 8px; padding: 5px 8px; border-radius: 8px; background: var(--bg3); }
+.maprow .hint { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 760px) { .maprow { grid-template-columns: 20px 1fr; } .maprow .hint, .maprow .farrow { display: none; } }
+
+#edBody.static .panel { animation: none; }

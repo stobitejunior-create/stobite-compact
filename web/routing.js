@@ -52,7 +52,7 @@
       for (const b of depths[lv]) {
         const i = S.mixer.buses.indexOf(b);
         const feeders = S.mixer.channels.filter(c => c.out === b.id).length + S.mixer.buses.filter(x => x.out === b.id).length + S.mixer.fx.filter(f => f.out === b.id).length;
-        const proc = ['comp', 'sat', 'dyneq', 'mbc', 'limiter', 'duck'].filter(k => b[k]?.on).map(k => ({ comp: 'COMP', sat: 'SAT', dyneq: 'DYN', mbc: 'MB', limiter: 'LIM', duck: 'DUCK' })[k]);
+        const proc = [...(b.chain || []).filter(m => m.on !== false && !(m.type === 'eq' && isFlat(m))).map(m => CATALOG?.moduleTypes?.[m.type]?.short || m.type.toUpperCase()), ...(b.duck?.on ? ['DUCK'] : [])];
         const node = h('div', { class: 'rnode bus', style: `--c:${b.color}` },
           h('div', { class: 'rtop' }, icon(b.kind === 'broadcast' ? 'broadcast' : 'bus', 16), h('span', { class: 'rname', onclick: () => openEditor('bus:' + b.id) }, b.name), h('span', { class: 'rcount' }, feeders + ' in')),
           h('div', { class: 'rproc' }, ...(proc.length ? proc : ['no processing']).map(p => h('span', { class: 'badge' + (proc.length ? ' on' : '') }, p))),
@@ -65,7 +65,7 @@
     // ---- master & outputs
     const mcol = h('div', { class: 'rcol' }, h('h4', {}, icon('broadcast', 14), 'Master → outputs'));
     const m = S.mixer.master;
-    const mproc = ['eq', 'comp', 'sat', 'dyneq', 'mbc', 'limiter'].filter(k => m[k]?.on).map(k => k.toUpperCase());
+    const mproc = (m.chain || []).filter(x => x.on !== false && !(x.type === 'eq' && isFlat(x))).map(x => CATALOG?.moduleTypes?.[x.type]?.short || x.type.toUpperCase());
     const mnode = h('div', { class: 'rnode master' }, h('div', { class: 'rtop' }, h('span', { class: 'rname', onclick: () => openEditor('master') }, 'Master')),
       h('div', { class: 'rproc' }, ...mproc.map(p => h('span', { class: 'badge on' }, p))));
     nodes.set('master', mnode); mcol.append(mnode);
@@ -85,10 +85,11 @@
     requestAnimationFrame(() => drawLinks(svg, box));
   }
 
+  const isFlat = m => !m.hpf?.on && !m.lpf?.on && (m.bands || []).every(b => b.on === false || (Math.abs(b.gain || 0) < 0.01 && !['hp', 'lp', 'notch'].includes(b.type)));
   function applyTemplate() {
     if (!confirm('Load the worship broadcast template onto the buses and master? Channel settings are not changed.')) return;
     const plan = { lead: 'Vocal Bus', bgv: 'Vocal Bus', drums: 'Drum Bus', music: 'Music Bus', speech: 'Speech Bus', broadcast: 'Broadcast Bus' };
-    const put = (base, cur, preset) => { for (const [k, v] of Object.entries(CATALOG.busPresets[preset])) setParam([...base, k], { ...cur[k], ...JSON.parse(JSON.stringify(v)) }); };
+    const put = (base, cur, preset) => setParam([...base, 'chain'], freshChain(CATALOG.busPresets[preset].chain));
     S.mixer.buses.forEach((b, i) => { if (plan[b.id]) put(['buses', i], b, plan[b.id]); });
     const mi = S.mixer.buses.findIndex(b => b.id === 'music');
     if (mi >= 0) setParam(['buses', mi, 'duck'], { ...S.mixer.buses[mi].duck, on: true, src: 'bus:lead', amount: 1.5, thr: -32 });

@@ -196,7 +196,11 @@ SCENE_NAMES = ["Pre-Service", "Worship", "Worship Build", "Worship Quiet", "Pray
 
 
 def catalog():
+    from .chain import legacy_to_chain, TYPES
+    chp = {n: {"chain": legacy_to_chain(p), "sends": p.get("sends")} for n, p in CHANNEL_PRESETS.items()}
+    bup = {n: {"chain": legacy_to_chain(p, bus=True)} for n, p in BUS_PRESETS.items()}
     return {
         "instruments": [dict(key=k, label=l, icon=i, bus=b, preset=p, color=c) for k, l, i, b, p, c in INSTRUMENTS],
-        "channelPresets": CHANNEL_PRESETS, "busPresets": BUS_PRESETS, "sceneNames": SCENE_NAMES,
+        "channelPresets": chp, "busPresets": bup, "sceneNames": SCENE_NAMES,
+        "moduleTypes": {k: {"label": v[0], "short": v[1], "ch": v[2], "bus": v[3]} for k, v in TYPES.items()},
     }

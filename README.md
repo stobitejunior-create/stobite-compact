@@ -55,6 +55,22 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 - **Guide** (book icon, top right): what every control does, plus worship and preaching recipes.
 - **Phone remote:** the same app at the address shown in Setup. The optional WING tab (off by default, Setup) can control the console itself.
 
+## Carrying a service between church and home
+
+- **Project file:** Edit → Export → *Project file* makes one `.stobite` file with every recording, edit, automation and the whole mix. On another computer: Edit → Import, drag it onto the timeline, or Setup → *Open a project file*.
+- **A channel's sound:** in a channel's editor, *Save this sound…* stores its processing chain, sends and routing as a `.stobite-channel` file in your sound library. *Load a sound…* puts it on any channel, so your piano sound works on any piano.
+- **The whole mix:** Mixer → *Mix settings* → Save makes a folder with one file per channel plus one for the buses, effects and master. Apply matches channels by name (then instrument, then position), lets you check the matches, then applies them.
+
+## Processing chains
+
+Every channel, bus and the master has an ordered chain: add any processor as many times as you like, drag to reorder, and bypass, duplicate or remove each one. The order is the order the sound goes through.
+
+## On a Mac
+
+Closing the window only hides it, like Notes: recording, the audio and the phone remote keep running. Click the Dock icon to bring it back; Quit (⌘Q) saves and exits.
+
+The **phone remote** is off by default (Setup). When off, only this computer can reach the app.
+
 ## Two ways to fix the room sound from outside
 
 1. **WING tab (recommended for live).** Your phone moves the console's own faders. There is zero added delay.

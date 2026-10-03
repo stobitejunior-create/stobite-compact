@@ -17,8 +17,8 @@ import threading
 import numpy as np
 
 from . import dsp
-from .procs import (BusStrip, DynEQ, Ducker, ReverbFX, Saturator, StereoDelay, Transient, CHAIN_DEFAULT)
-from .autotune import AutoTune
+from . import chain
+from .procs import Ducker, ReverbFX, StereoDelay
 
 try:
     import pedalboard as pb
@@ -61,24 +61,12 @@ DEFAULT_BUSES = [
 OFF = {"on": False}
 
 
-def _eq_flat():
-    return {"on": True, "bands": [
-        {"type": "lowshelf", "freq": 100, "gain": 0, "q": 0.7, "on": True, "slope": 12},
-        {"type": "bell", "freq": 400, "gain": 0, "q": 1.0, "on": True, "slope": 12},
-        {"type": "bell", "freq": 2500, "gain": 0, "q": 1.0, "on": True, "slope": 12},
-        {"type": "highshelf", "freq": 8000, "gain": 0, "q": 0.7, "on": True, "slope": 12},
-    ]}
-
-
-def _dyneq_default():
-    return {"on": False, "sc": "", "bands": [
-        {"on": True, "type": "bell", "freq": 250, "q": 1.2, "gain": 0, "thr": -24, "range": -3, "att": 10, "rel": 150},
-        {"on": False, "type": "bell", "freq": 3500, "q": 2.0, "gain": 0, "thr": -26, "range": -3, "att": 3, "rel": 100},
-    ]}
-
-
 def _duck_default(src=""):
     return {"on": False, "src": src, "amount": 2.0, "thr": -30, "att": 15, "rel": 400, "ratio": 4}
+
+
+LEGACY_KEYS = ("hpf", "lpf", "eq", "gate", "comp", "deess", "dyneq", "trans", "sat", "tune", "mbc", "limiter", "inserts",
+               "drive")
 
 
 def default_strip(i):
@@ -86,50 +74,35 @@ def default_strip(i):
         "name": f"Ch {i + 1}", "color": COLORS[(i // 8) % len(COLORS)], "icon": "", "type": "",
         "input": f"in:{i}", "out": "music",
         "trim": 0.0, "phase": False,
-        "hpf": {"on": False, "freq": 80, "slope": 24},
-        "lpf": {"on": False, "freq": 16000, "slope": 12},
-        "gate": {"on": False, "thr": -50, "range": 40, "att": 1, "rel": 120},
-        "eq": _eq_flat(),
-        "comp": {"on": False, "thr": -18, "ratio": 3, "knee": 6, "att": 10, "rel": 150, "makeup": 0, "mix": 100, "range": 30},
-        "deess": {"on": False, "freq": 6500, "thr": -28, "range": 8},
-        "dyneq": _dyneq_default(),
-        "trans": {"on": False, "attack": 0, "sustain": 0},
-        "sat": {"on": False, "type": "tape", "drive": 3, "mix": 100},
-        "tune": {"on": False, "amount": 100, "speed": 40, "voice": "any", "scale": "song"},
-        "inserts": [],
+        # processing, in order: add, remove, duplicate and reorder freely
+        "chain": [chain.module("eq"), chain.module("comp", on=False)],
         "pan": 0.0, "fader": 0.0, "mute": False, "solo": False,
         "sends": [-90.0, -90.0, -90.0, -90.0],
     }
 
 
 def default_bus(bid, name, kind, out, color):
-    b = {
+    mods = [chain.module("eq"), chain.module("comp", on=False, thr=-14, ratio=2, att=30, rel=200)]
+    if bid == "broadcast":
+        mods.append(chain.module("limiter", ceiling=-1.0))
+    return {
         "id": bid, "name": name, "kind": kind, "out": out, "color": color,
-        "fader": 0.0, "mute": False, "width": 100.0, "balance": 0.0,
-        "hpf": {"on": False, "freq": 30, "slope": 24}, "lpf": {"on": False, "freq": 18000, "slope": 12},
-        "eq": _eq_flat(),
-        "comp": {"on": False, "thr": -14, "ratio": 2, "knee": 6, "att": 30, "rel": 200, "makeup": 0, "mix": 100, "range": 30, "sc": ""},
-        "sat": {"on": False, "type": "tape", "drive": 2, "mix": 50},
-        "dyneq": _dyneq_default(),
-        "mbc": {"on": False, "x1": 180, "x2": 3500, "bands": [
-            {"thr": -20, "ratio": 2, "att": 30, "rel": 250, "gain": 0, "range": 3},
-            {"thr": -18, "ratio": 1.5, "att": 20, "rel": 200, "gain": 0, "range": 2},
-            {"thr": -22, "ratio": 2, "att": 10, "rel": 150, "gain": 0, "range": 3}]},
-        "limiter": {"on": False, "ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
+        "fader": 0.0, "mute": False,
+        "chain": mods,
         "duck": _duck_default("bus:lead" if bid == "music" else ""),
         "sends": [-90.0, -90.0, -90.0, -90.0],
-        "chain": list(CHAIN_DEFAULT), "inserts": [],
     }
-    if bid == "broadcast":
-        b["limiter"].update(on=True, ceiling=-1.0)
-    return b
 
 
 def default_master():
-    m = default_bus("master", "Master", "master", "out", "#e8e9eb")
-    m.update(limiter={"on": True, "ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
-             target=-14.0, tp_max=-1.0, duck=dict(OFF))
-    return m
+    return {
+        "id": "master", "name": "Master", "kind": "master", "out": "out", "color": "#e8e9eb",
+        "fader": 0.0, "mute": False, "target": -14.0, "tp_max": -1.0,
+        "chain": [chain.module("eq"), chain.module("comp", on=False, thr=-12, ratio=2, att=30, rel=200),
+                  chain.module("sat", on=False, drive=1.5, mix=50), chain.module("mbc", on=False),
+                  chain.module("width"), chain.module("limiter", ceiling=-1.0)],
+        "duck": dict(OFF), "sends": [-90.0] * 4,
+    }
 
 
 def default_fx():
@@ -153,8 +126,20 @@ def default_state(nch):
         "order": list(range(nch)),
         "cables": [{"name": f"Cable {k + 1}", "src": "master" if k == 0 else "none", "gain": 0.0} for k in range(N_CABLES)],
         "monitor": "stereo",
-        "version": 2,
+        "version": 3,
     }
+
+
+def _to_chain(obj, bus):
+    """Older sessions kept one fixed slot per processor; turn those into a chain."""
+    ch = obj.get("chain")
+    if isinstance(ch, list) and all(isinstance(m, dict) for m in ch) and ch:
+        return ch
+    order = [m for m in ch if isinstance(m, str)] if isinstance(ch, list) and ch else None
+    if bus and isinstance(obj.get("drive"), (int, float)) and "sat" not in obj:  # version 1 master
+        obj["sat"] = {"on": obj["drive"] > 0.05, "drive": max(obj["drive"], 1.0), "type": "tape", "mix": 100}
+    always = ("eq", "width") if obj.get("id") == "master" else ("eq",)
+    return chain.legacy_to_chain(obj, bus=bus, always=always, order=order)
 
 
 def migrate(state, nch):
@@ -163,15 +148,12 @@ def migrate(state, nch):
     fresh = default_state(nch)
     for i, c in enumerate(st.get("channels", [])):
         c.setdefault("input", f"in:{i}")
+        c["chain"] = _to_chain(c, bus=False)
+        for k in LEGACY_KEYS:
+            c.pop(k, None)
         for k, v in default_strip(i).items():
-            if k not in ("name", "color", "input"):
+            if k not in ("name", "color", "input", "chain"):
                 c.setdefault(k, copy.deepcopy(v))
-        c["hpf"].setdefault("slope", 24)
-        c["lpf"].setdefault("slope", 12)
-        for b in c["eq"].get("bands", []):
-            b.setdefault("slope", 12)
-        c["comp"].setdefault("mix", 100)
-        c["comp"].setdefault("range", 30)
     if "buses" not in st:
         st["buses"] = fresh["buses"]
     known = {b["id"] for b in st["buses"]}
@@ -179,19 +161,17 @@ def migrate(state, nch):
         if b["id"] not in known:
             st["buses"].append(b)
     for b in st["buses"]:
-        for k, v in default_bus(b["id"], b.get("name", b["id"]), b.get("kind", "group"), b.get("out", "master"), b.get("color", "#888")).items():
+        b["chain"] = _to_chain(b, bus=True)
+        for k in LEGACY_KEYS + ("width", "balance", "inserts"):
+            b.pop(k, None)
+        base = default_bus(b["id"], b.get("name", b["id"]), b.get("kind", "group"), b.get("out", "master"), b.get("color", "#888"))
+        for k, v in base.items():
             b.setdefault(k, copy.deepcopy(v))
     m = st.get("master") or fresh["master"]
-    if "duck" not in m:  # master saved by version 1
-        old_drive, old_lim = m.get("drive", 0.0), m.get("limiter", {})
-        nm = default_master()
-        for k in ("fader", "mute", "hpf", "lpf", "eq", "inserts", "width", "target"):
-            if k in m:
-                nm[k] = m[k]
-        nm["comp"].update({k: v for k, v in m.get("comp", {}).items() if k in nm["comp"]})
-        nm["sat"].update(on=old_drive > 0.05, drive=max(old_drive, 1.0), type="tape", mix=100)
-        nm["limiter"].update(on=old_lim.get("on", True), ceiling=old_lim.get("ceiling", -1.0))
-        m = nm
+    m.setdefault("id", "master")
+    m["chain"] = _to_chain(m, bus=True)
+    for k in LEGACY_KEYS + ("width", "balance", "inserts"):
+        m.pop(k, None)
     for k, v in default_master().items():
         m.setdefault(k, copy.deepcopy(v))
     st["master"] = m
@@ -210,7 +190,7 @@ def migrate(state, nch):
     order = [i for i in st.get("order", []) if isinstance(i, int) and 0 <= i < nch]
     order += [i for i in range(nch) if i not in order]
     st["order"] = order
-    st["version"] = 2
+    st["version"] = 3
     return st
 
 
@@ -286,6 +266,42 @@ class Insert:
             return x
 
 
+class MissingPlugin:
+    """Stands in for a plug-in that can't be loaded on this computer (it is skipped)."""
+    failed = True
+    bypass = True
+
+    def __init__(self, path, name):
+        self.path, self.name = path, name
+
+    def params(self):
+        return []
+
+    def set_raw(self, key, raw):
+        pass
+
+    def process(self, x, fs):
+        return x
+
+
+class BusUnit:
+    """A bus (or the master): its processing chain plus ducking."""
+
+    def __init__(self, fs, loader):
+        self.chain = chain.BusChain(fs, loader)
+        self.duck = Ducker(fs)
+
+    def set_params(self, b, bypass_limiters=False):
+        self.chain.set_params(b.get("chain"), bypass_limiters)
+
+    def process(self, x, sc_fn=None):
+        return self.chain.process(x, sc_fn)
+
+    def meters(self):
+        gr, lim, mbc, mods = self.chain.meters()
+        return {"gr": round(gr, 1), "lim": round(lim, 1), "mbc": mbc, "duck": round(self.duck.gr, 1), "mods": mods}
+
+
 class Mixer:
     def __init__(self, nch, fs, state=None):
         self.nch, self.fs = nch, fs
@@ -295,9 +311,8 @@ class Mixer:
         self.auto = None          # automation overrides for this block, set by the engine
         self.focus = None         # channel whose spectrum the editor is showing
         self.focus_ring = dsp.Ring(4096)
-        self.inserts = [[] for _ in range(nch)]
-        self.minserts = []
-        self.binserts = {}
+        self.focus_target = None  # 'ch:3' / 'bus:drums' / 'master': whose module meters to report
+        self.plugins = {}         # module id -> loaded plug-in instance
         self.loud = dsp.Loudness(fs)
         self.cable_out = None
         self._init_procs()
@@ -306,15 +321,9 @@ class Mixer:
 
     def _init_procs(self):
         n, fs = self.nch, self.fs
-        self.filters = dsp.FilterBank(n)
-        self.dyn = dsp.Dynamics(n, fs)
-        self.deess = dsp.DeEsser(n, fs)
-        self.trans = Transient(n, fs)
-        self.sat = Saturator(n)
-        self.dyneqs = {}
-        self.tuners = {}
+        self.chains = chain.ChannelChains(n, fs, self._plugin)
         self.strips = {}
-        self.master_strip = BusStrip(fs)
+        self.master_strip = BusUnit(fs, self._plugin)
         self.fx = [None] * len(self.state["fx"])
         self.fx_duck = [Ducker(fs) for _ in self.state["fx"]]
         self.bus_last = {}
@@ -332,17 +341,39 @@ class Mixer:
             chs.append(default_strip(len(chs)))
         del chs[self.nch:]
 
-    @property
-    def limiter(self):
-        return self.master_strip.limiter
+    def _plugin(self, m):
+        """Load (once) the plug-in a chain module points at; settings come from the module."""
+        mid, path = m.get("id"), m.get("path", "")
+        cur = self.plugins.get(mid)
+        if cur is not None and getattr(cur, "path", None) == path:
+            return cur
+        try:
+            inst = Insert(path, m.get("name"))
+            for k, v in (m.get("params") or {}).items():
+                try:
+                    inst.set_raw(k, v)
+                except Exception:
+                    pass
+        except Exception:
+            inst = MissingPlugin(path, m.get("name", "Plug-in"))
+        self.plugins[mid] = inst
+        return inst
+
+    def set_master_limiters(self, on):
+        """Export measures the mix with the master limiter out of the way, then renders with it."""
+        self.master_strip.set_params(self.state["master"], bypass_limiters=not on)
+
+    def module_by_id(self, mid):
+        for owner in [*self.state["channels"], *self.state["buses"], self.state["master"]]:
+            for m in owner.get("chain") or []:
+                if m.get("id") == mid:
+                    return m
+        return None
 
     # ------------------------------------------------------------- compile
     def rebuild_all(self):
         with self.lock:
-            for c in range(self.nch):
-                self._rebuild_filter(c)
-                self._rebuild_dyneq(c)
-                self._rebuild_tune(c)
+            self._rebuild_channels()
             for b in self.state["buses"]:
                 self._rebuild_bus(b)
             self.master_strip.set_params(self.state["master"])
@@ -350,30 +381,15 @@ class Mixer:
                 self._rebuild_fx(i, fresh=True)
             self._compile()
 
-    def _rebuild_filter(self, c):
-        sos, act = dsp.strip_sos(self.state["channels"][c], self.fs)
-        self.filters.set(c, sos, act)
-
-    def _rebuild_dyneq(self, c):
-        d = self.state["channels"][c].get("dyneq") or {}
-        if d.get("on"):
-            eq = self.dyneqs.get(c) or DynEQ(1, self.fs)
-            eq.set_params(d)
-            self.dyneqs[c] = eq
-        else:
-            self.dyneqs.pop(c, None)
-
-    def _rebuild_tune(self, c):
-        d = self.state["channels"][c].get("tune") or {}
-        if d.get("on"):
-            at = self.tuners.get(c) or AutoTune(self.fs)
-            at.set_params(d, self.state.get("song", {}))
-            self.tuners[c] = at
-        else:
-            self.tuners.pop(c, None)
+    def _rebuild_channels(self):
+        self.chains.compile(self.state["channels"], self.state.get("song", {}))
+        live = {m["id"] for o in [*self.state["channels"], *self.state["buses"], self.state["master"]]
+                for m in o.get("chain") or [] if m.get("type") == "plugin"}
+        for mid in [k for k in self.plugins if k not in live]:
+            self.plugins.pop(mid, None)
 
     def _rebuild_bus(self, b):
-        st = self.strips.get(b["id"]) or BusStrip(self.fs)
+        st = self.strips.get(b["id"]) or BusUnit(self.fs, self._plugin)
         st.set_params(b)
         self.strips[b["id"]] = st
 
@@ -431,10 +447,7 @@ class Mixer:
             cables=[(cb.get("src", "none"), dsp.db_to_lin(cb.get("gain", 0))) for cb in st.get("cables", [])],
         )
         self._src_cache = {}
-        self.dyn.set_params(chs)
-        self.deess.set_params(chs)
-        self.trans.set_params(chs)
-        self.sat.set_params(chs)
+        self.master_limited = any(m.get("type") == "limiter" and m.get("on", True) for m in st["master"].get("chain") or [])
 
     # ------------------------------------------------------------- input routing
     def src_index(self, n_in, n_cable=N_CABLES * 2):
@@ -487,19 +500,25 @@ class Mixer:
                 node[last] = value
             root = path[0]
             sec = path[2] if len(path) > 2 else None
+            # a plug-in setting: send it straight to the loaded plug-in, nothing to rebuild
+            if "chain" in path and "params" in path:
+                ci = path.index("chain")
+                owner = self.state
+                for k in path[:ci + 2]:
+                    owner = owner[int(k) if isinstance(owner, list) else k]
+                if owner.get("type") == "plugin" and path[-2] == "params":
+                    inst = self.plugins.get(owner.get("id"))
+                    if inst is not None:
+                        inst.set_raw(str(path[-1]), value)
+                    return
             if root == "channels":
-                c = int(path[1])
-                if sec in ("hpf", "lpf", "eq"):
-                    self._rebuild_filter(c)
-                elif sec == "dyneq":
-                    self._rebuild_dyneq(c)
-                elif sec == "tune":
-                    self._rebuild_tune(c)
+                if sec == "chain":
+                    self._rebuild_channels()
             elif root == "buses":
-                if sec not in ("fader", "mute", "sends", "name", "color"):
+                if sec == "chain":
                     self._rebuild_bus(self.state["buses"][int(path[1])])
             elif root == "master":
-                if len(path) > 1 and path[1] not in ("fader", "mute", "target", "tp_max"):
+                if len(path) > 1 and path[1] == "chain":
                     self.master_strip.set_params(self.state["master"])
             elif root == "fx":
                 i = int(path[1])
@@ -511,8 +530,7 @@ class Mixer:
                 elif sec == "params":
                     self._rebuild_fx(i)
             elif root == "song":
-                for c in list(self.tuners):
-                    self._rebuild_tune(c)
+                self._rebuild_channels()
             elif root == "tempo":
                 for i, f in enumerate(self.state["fx"]):
                     if f["type"] == "delay":
@@ -549,7 +567,6 @@ class Mixer:
                     f["out"] = dest
             self.state["buses"] = [b for b in buses if b["id"] != bid]
             self.strips.pop(bid, None)
-            self.binserts.pop(bid, None)
             self._compile()
 
     def apply_state(self, state):
@@ -557,10 +574,7 @@ class Mixer:
         with self.lock:
             self.state = migrate(state, self.nch)
             self._fit_channels()
-            for c in range(self.nch):
-                self._rebuild_filter(c)
-                self._rebuild_dyneq(c)
-                self._rebuild_tune(c)
+            self._rebuild_channels()
             for b in self.state["buses"]:
                 self._rebuild_bus(b)
             self.master_strip.set_params(self.state["master"])
@@ -592,16 +606,33 @@ class Mixer:
         self.m_tp = 0.0
 
     def read_meters(self):
-        ms = self.master_strip
+        mm = self.master_strip.meters()
+        ch = self.chains
         out = dict(i=self.m_in, p=self.m_post, r=self.m_rms, m=self.m_master, mr=self.m_mrms, fx=self.m_fx,
-                   gr=self.dyn.comp_gr.copy(), gg=self.dyn.gate_gr.copy(), ds=self.deess.gr.copy(),
-                   mgr=float(ms.comp.comp_gr.max()), lim=ms.limiter.gr, tp=self.m_tp,
+                   gr=ch.channel_gr("comp"), gg=ch.channel_gr("gate"), ds=ch.channel_gr("deess"),
+                   mgr=mm["gr"], lim=mm["lim"], tp=self.m_tp,
                    b={k: v for k, v in self.m_bus.items()},
-                   bm={bid: st.meters() for bid, st in self.strips.items()}, mm=ms.meters(),
+                   bm={bid: st.meters() for bid, st in self.strips.items()}, mm=mm,
                    fxd=[round(d.gr, 1) for d in self.fx_duck],
-                   at={c: r for c, at in list(self.tuners.items()) if (r := at.readout())})
+                   at=ch.tune_readouts(), mods=self._focus_mods())
         self.reset_meters()
         return out
+
+    def _focus_mods(self):
+        """Live readings for each module of the strip open in the editor."""
+        t = self.focus_target
+        if not t:
+            return None
+        try:
+            if t.startswith("ch:"):
+                return self.chains.module_meters(self.state["channels"][int(t[3:])].get("chain"))
+            if t == "master":
+                return self.master_strip.meters()["mods"]
+            if t.startswith("bus:") and t[4:] in self.strips:
+                return self.strips[t[4:]].meters()["mods"]
+        except Exception:
+            return None
+        return None
 
     # ------------------------------------------------------------- audio helpers
     def _sc_signal(self, spec, x, fad):
@@ -657,23 +688,7 @@ class Mixer:
         dormant = self.ch_quiet > self.fs * 0.5
         # ---- channel strips
         x *= c["pre"]
-        self.filters.process(x, dormant)
-        for ch, at in list(self.tuners.items()):  # pitch correction before dynamics
-            if not dormant[ch]:
-                x[:, ch] = at.process(x[:, ch])
-        self.dyn.process(x)
-        self.deess.process(x)
-        for ch, eq in self.dyneqs.items():
-            if not dormant[ch]:
-                x[:, ch:ch + 1] = eq.process(x[:, ch:ch + 1].copy())
-        self.trans.process(x)
-        self.sat.process(x)
-        for ch, ins in enumerate(self.inserts):
-            if ins and not dormant[ch]:
-                col = x[:, ch:ch + 1]
-                for p in ins:
-                    col = p.process(col, self.fs)
-                x[:, ch] = col[:, 0]
+        self.chains.process(x, dormant)   # each channel's own chain, in its own order
         if direct_out is not None:
             direct_out[:] = x
         if self.focus is not None and 0 <= self.focus < self.nch:
@@ -737,18 +752,12 @@ class Mixer:
                     strip.duck.gr = 0.0
                 continue
             if strip is not None:
-                det = None
-                sc = (bs.get("comp") or {}).get("sc") or (bs.get("dyneq") or {}).get("sc")
-                if sc:
-                    det = self._sc_signal(sc, x, fad)
-                strip.process(sig, det)
+                strip.process(sig, lambda spec: self._sc_signal(spec, x, fad))
                 duck = bs.get("duck") or {}
                 if duck.get("on") and duck.get("src"):
                     sig *= strip.duck.gain(self._peak_db(self._sc_signal(duck["src"], x, fad)), duck, frames)
                 else:
                     strip.duck.gr = 0.0
-            for p in self.binserts.get(bid, ()):
-                sig = p.process(sig, self.fs)
             sig = (sig * c["bus_gain"][bid]).astype(np.float32)
             self.bus_cur[bid] = sig
             mb = self.m_bus.get(bid)
@@ -768,12 +777,9 @@ class Mixer:
             out[:] = 0.0
             self.loud.silence(frames)
         else:
-            self.master_strip.process(out)
-            for p in self.minserts:
-                out = p.process(out, self.fs)
+            self.master_strip.process(out, lambda spec: self._sc_signal(spec, x, fad))
             out *= master_g
-            lim = self.state["master"].get("limiter") or {}
-            if lim.get("on"):
+            if self.master_limited:
                 np.clip(out, -1.0, 1.0, out=out)
             self.loud.process(out)
         self.last_out_peak = float(np.abs(out).max()) if frames else 0.0

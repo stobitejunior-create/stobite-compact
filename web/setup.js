@@ -51,9 +51,10 @@
         h('p', {}, 'Stobite Compact never changes your WING. If you ever want to move the WING\'s own faders from a phone, you can turn on the WING tab here.'),
         h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!c.show_wing, onchange: e => save({ show_wing: e.target.checked }) }), 'Show the WING tab (remote-controls the console)')),
 
-      h('div', { class: 'card' }, h('h3', {}, 'Remote control from your phone'),
-        h('p', {}, 'On any phone, tablet or laptop on the same Wi-Fi, open:'),
-        ...(i.urls.length ? i.urls.map(u => h('span', { class: 'url' }, u)) : [h('p', { class: 'err' }, 'This computer has no network address — connect it to the Wi-Fi.')]),
+      h('div', { class: 'card' }, h('h3', {}, 'Phone remote'),
+        h('label', { class: 'chk', style: 'margin:4px 0 8px' }, h('input', { type: 'checkbox', checked: !!i.remote, onchange: e => save({ remote: e.target.checked }) }), h('b', {}, 'Let phones and tablets on the Wi-Fi connect')),
+        i.remote ? h('p', {}, 'On any phone, tablet or laptop on the same Wi-Fi, open:') : h('p', { class: 'hint' }, 'Off: only this computer can use the app, and nothing on the network can see it. Turn on when you want to mix from your phone.'),
+        ...(!i.remote ? [] : i.urls.length ? i.urls.map(u => h('span', { class: 'url' }, u)) : [h('p', { class: 'err' }, 'This computer has no network address — connect it to the Wi-Fi.')]),
         h('p', { class: 'hint' }, 'Walk into the room or outside with your phone, make changes, and they apply immediately. Everyone connected stays in sync.'),
         h('div', { class: 'f' }, h('span', {}, 'Remote PIN'), h('input', { type: 'password', placeholder: i.hasPin ? '•••• (set — type to change)' : 'none — anyone on the Wi-Fi can connect', onchange: e => save({ pin: e.target.value }) })),
         h('p', { class: 'hint' }, 'If your church Wi-Fi is open to guests, set a PIN. This computer never needs it.')),
@@ -130,10 +131,14 @@
     const list = h('div', { class: 'list' });
     for (const s of i.sessions) list.append(h('div', { class: 'li' + (s.name === S.session?.name ? ' cur' : ''), onclick: async () => { if (s.name === S.session?.name) return; await tryApi('session-open', { name: s.name }); toast('Opened ' + s.name); refresh(); } }, s.name, h('span', {}, new Date(s.modified * 1000).toLocaleString())));
     const name = h('input', { placeholder: 'New session name e.g. Sunday 5 Oct', style: 'flex:1' });
+    const projIn = h('input', { type: 'file', accept: '.stobite', hidden: true, onchange: e => { if (e.target.files[0]) importProject(e.target.files[0]); e.target.value = ''; } });
     return h('div', { class: 'card' }, h('h3', {}, 'Sessions'),
       h('div', { style: 'display:flex;gap:6px;margin-bottom:8px' }, name, h('button', { class: 'btn accent', onclick: async () => { await tryApi('session-new', { name: name.value }); toast('New session created'); refresh(); } }, 'New')),
       list,
-      ['localhost', '127.0.0.1'].includes(location.hostname) ? h('button', { class: 'btn', style: 'margin-top:8px', onclick: () => api('reveal') }, 'Show session folder') : null);
+      h('div', { style: 'display:flex;gap:6px;margin-top:8px;flex-wrap:wrap' },
+        h('button', { class: 'btn', onclick: () => projIn.click() }, icon('import', 14), 'Open a project file…'), projIn,
+        ['localhost', '127.0.0.1'].includes(location.hostname) ? h('button', { class: 'btn', onclick: () => api('reveal') }, 'Show session folder') : null),
+      h('p', { class: 'hint' }, 'Take a service home: Edit → Export → Project file. It holds every recording and the whole mix in one .stobite file.'));
   }
 
   const WING_COLORS = ['#3f6ad8', '#29a3d9', '#1fb5a6', '#3ec46d', '#9fcc3b', '#e6c229', '#f08a24', '#e5484d', '#e85d9e', '#a35bd8', '#7a7f8a', '#cfd2d6'];

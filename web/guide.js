@@ -9,7 +9,8 @@
       <li><b>Mixer</b>: channel strips, buses, FX returns and master, with layers across the top.</li>
       <li><b>Routing</b>: a map of where every signal goes. Change any arrow to re-route.</li>
       <li><b>Master</b>: loudness (LUFS), true peak, spectrum, stereo checks and the final chain.</li>
-      <li><b>Setup</b>: audio interface, outputs, virtual cables, the phone remote and the guide to connecting the WING.</li></ul>`],
+      <li><b>Setup</b>: audio interface, outputs, virtual cables, the phone remote and the guide to connecting the WING.</li></ul>
+      <p>On a Mac, closing the window only hides it (like Notes): recording and audio keep running. Click the Dock icon to bring it back; Quit (⌘Q) saves and exits.</p>`],
     ['input', 'Inputs, raw recording and channel order', `
       <p>One USB cable from the WING carries up to 48 channels. Each channel strip has an <b>Input</b> (WING USB 1–48 or a virtual cable). Change it to point any strip at any input, and drag strips to reorder them. The WING never changes.</p>
       <p><b>Recording is always raw.</b> The app writes each channel's input to disk <i>before</i> trim, EQ, dynamics or faders. You can always go back and remix from untouched audio. To keep the WING's own faders out of it, set its USB outputs to send the channel <b>direct outs pre-fader</b> (Setup has the steps).</p>
@@ -105,8 +106,19 @@
     ['scenes', 'Scenes', `
       <p>A scene is a snapshot of the mixer, e.g. <i>Pre-Service, Worship, Worship Quiet, Prayer, Preaching, Altar Call, Closing</i>. Saved scenes appear as quick buttons along the top of the Mixer.</p>
       <p><b>Recall changes</b> controls what a recall touches: faders, mutes, EQ, dynamics, sends, FX or routing. For example, you can recall just faders and mutes when moving from Worship to Preaching, without undoing an EQ fix you made five minutes ago. <b>Recall-safe</b> channels are never changed by scenes, which is perfect for the preaching mic you're riding by hand.</p>`],
-    ['chain', 'Processing order', `
-      <p>On buses and the master you choose the order processors run in. The common mastering order is EQ → Compressor → Saturation → Dynamic EQ → Multiband → Width → Limiter. Keep the <b>limiter last</b>. Putting EQ after the compressor makes the EQ more audible; before it, the compressor reacts to your EQ changes.</p>`],
+    ['chain', 'Processing chains (and why order matters)', `
+      <p>Every channel, bus and the master has a <b>processing chain</b>: a list of processors the sound passes through, top to bottom. You build it yourself: <b>+ Add a processor</b> (EQ, compressor, gate, de-esser, dynamic EQ, transient shaper, saturation, auto-tune, plug-ins; on buses also multiband, width and limiter). Use any processor more than once: two gentle compressors often sound smoother than one hard one.</p>
+      <p>The numbered list shows the order. <b>Drag</b> (or use ↑ ↓) to reorder, <b>ON/OFF</b> bypasses one instantly, ⧉ duplicates, ✕ removes. The badges on each mixer strip show the chain in order too.</p>
+      <p><b>Order changes the sound:</b> an EQ cut <i>before</i> a compressor changes what the compressor reacts to; the same cut <i>after</i> it just turns that range down. Common orders: vocal = EQ (cuts) → compressor → de-esser → EQ (air) → saturation; drums = gate → EQ → compressor → saturation; master = EQ → glue compressor → saturation → multiband → width → limiter. Keep a limiter last.</p>`],
+    ['carry', 'Taking a service home, and back to church', `
+      <ol><li><b>At church:</b> record the service. Edit → Export → <b>Project file</b> makes one <i>.stobite</i> file with every recording, edit, marker, automation and the whole mix. Copy it to a USB stick or cloud drive.</li>
+      <li><b>At home:</b> Edit → Import (or drag the file onto the timeline, or Setup → Open a project file). Everything appears exactly as it was.</li>
+      <li><b>Mix it</b> until it sounds great.</li>
+      <li><b>Save the sound:</b> Mixer → <b>Mix settings</b> → Save. You get a folder with one file per channel (e.g. <i>03 Piano.stobite-channel</i>) and one for the buses, effects and master. Each channel file is also added to your sound library.</li>
+      <li><b>Back at church:</b> Mix settings → Apply (or From a folder…). Each saved channel is matched to the live channel with the same name (then the same instrument, then the same position); check the matches, choose what to take (chains, sends, routing, names, levels, buses/effects/master), and Apply. The piano gets everything you did at home, live.</li></ol>
+      <p><b>One channel at a time:</b> in any channel's editor, <b>Save this sound…</b> stores just that channel (e.g. “Piano – warm”), and <b>Load a sound…</b> puts a saved sound on any channel. Your favourite piano sound then works on any piano, on any computer.</p>`],
+    ['remote', 'The phone remote and the network', `
+      <p>The app's window talks to its audio engine through a small server inside the app. With <b>Phone remote</b> off (Setup), that server only answers this computer, so nothing on the network can see it. Turn it on to mix from a phone or tablet on the same Wi-Fi, and set a PIN if guests use the Wi-Fi.</p>`],
     ['inserts', 'Plug-ins (inserts)', `<p>Add your own VST3 or Audio Unit plug-ins to any channel, bus or the master. Their settings appear as sliders, can be bypassed instantly, and can be automated in Touch mode.</p>`],
     ['edit', 'Recording and editing', `
       <ul><li>Arm tracks with <b>R</b> on each track (or <b>Arm all</b>) and press record. Every armed channel records its raw input to its own 24-bit WAV.</li><li><b>Split</b> (S), <b>Blade</b> tool (B), and drag clip edges to trim. Drag the yellow squares on a selected clip to fade it.</li><li><b>Range</b> tool (G): drag across tracks, then Delete with <b>Ripple</b> on to remove a section from every track and close the gap (cutting out the offering, for example).</li><li>Drag audio files from Finder or Explorer onto the timeline to import them.</li><li><b>Loop</b> (L) a section to dial in a mix while it repeats.</li><li><b>Export</b>: a stereo mix with loudness targeting, or separate tracks to open in Logic, Pro Tools or Cubase.</li></ul>`],

@@ -79,11 +79,25 @@
   window.buildMixer = buildMixer;
   function sizeMeters() { $$('#view-mixer .meter').forEach(m => m.style.setProperty('--h', m.clientHeight + 'px')); }
   function redrawThumbs() {
-    for (const s of stripEls) drawEqCurve(s.thumb, S.mixer.channels[s.c], fs());
-    for (const s of busEls) drawEqCurve(s.thumb, S.mixer.buses[s.i], fs());
-    if (masterEls) drawEqCurve(masterEls.thumb, S.mixer.master, fs());
+    for (const s of stripEls) drawEqCurve(s.thumb, chainEqView(S.mixer.channels[s.c]), fs());
+    for (const s of busEls) drawEqCurve(s.thumb, chainEqView(S.mixer.buses[s.i]), fs());
+    if (masterEls) drawEqCurve(masterEls.thumb, chainEqView(S.mixer.master), fs());
   }
 
+  // one small badge per processor, in chain order; click = bypass on/off
+  function chainBadges(base, chainArr) {
+    const wrap = h('div', { class: 'badges' });
+    (chainArr || []).forEach((m, k) => {
+      const info = CATALOG?.moduleTypes?.[m.type];
+      const b = h('span', { class: 'badge' + (m.on !== false ? ' on' : ''), title: (k + 1) + '. ' + (m.type === 'plugin' ? m.name : info?.label || m.type) + ' (click to bypass)',
+        onclick: e => { e.stopPropagation(); setParam([...base, 'chain', k, 'on'], !(getPath(S.mixer, [...base, 'chain', k, 'on']) !== false)); } },
+        m.type === 'plugin' ? (m.name || 'PLUG').slice(0, 6).toUpperCase() : (info?.short || m.type.toUpperCase()));
+      bind([...base, 'chain', k, 'on'], { set: v => b.classList.toggle('on', v !== false) });
+      wrap.append(b);
+    });
+    if (!(chainArr || []).length) wrap.append(h('span', { class: 'badge' }, 'NO FX'));
+    return wrap;
+  }
   function badge(label, path, title) {
     const b = h('span', { class: 'badge' + (getPath(S.mixer, path) ? ' on' : ''), title: title || 'Toggle ' + label, onclick: e => { e.stopPropagation(); setParam(path, !getPath(S.mixer, path)); } }, label);
     bind(path, { set: v => b.classList.toggle('on', !!v) });
@@ -110,9 +124,7 @@
       h('span', { class: 'inlbl', title: 'Input (change it in the channel editor)' }, inputLabel(ch.input)),
       h('span', { class: 'outlbl', style: `--c:${destColor(ch.out)}`, title: 'Goes to this bus' }, '→ ' + destName(ch.out)));
     const thumb = h('canvas');
-    const badges = h('div', { class: 'badges' },
-      badge('HPF', P('hpf', 'on'), 'Low cut'), badge('GATE', P('gate', 'on')), badge('EQ', P('eq', 'on')), badge('COMP', P('comp', 'on')),
-      badge('DS', P('deess', 'on'), 'De-esser'), badge('DYN', P('dyneq', 'on'), 'Dynamic EQ'), badge('TR', P('trans', 'on'), 'Transient shaper'), badge('SAT', P('sat', 'on'), 'Saturation'), badge('TUNE', P('tune', 'on'), 'Auto-tune (pitch correction)'));
+    const badges = chainBadges(['channels', c], ch.chain);
     const gr = h('i');
     const sends = h('div', { class: 'sends' }, ...S.mixer.fx.map((f, i) => bind(P('sends', i), Knob({ label: f.name.split(' ').pop().slice(0, 6), min: -90, max: 10, value: ch.sends[i], def: -90, size: 26, format: fmt.db, color: '#3aa0ff', onChange: v => setParam(P('sends', i), v) })).el));
     const pan = bind(P('pan'), Knob({ label: 'Pan', min: -1, max: 1, value: ch.pan, def: 0, size: 28, format: fmt.pan, bipolar: true, onChange: v => setParam(P('pan'), v) }));
@@ -160,8 +172,7 @@
       name,
       h('div', { class: 'io' }, h('span', { class: 'outlbl', style: `--c:${destColor(b.out)}` }, '→ ' + destName(b.out))),
       h('div', { class: 'eqthumb', onclick: () => openEditor('bus:' + b.id) }, thumb),
-      h('div', { class: 'badges' }, badge('EQ', P('eq', 'on')), badge('COMP', P('comp', 'on')), badge('SAT', P('sat', 'on')), badge('DYN', P('dyneq', 'on')),
-        badge('MB', P('mbc', 'on'), 'Multiband compressor'), badge('LIM', P('limiter', 'on')), badge('DUCK', P('duck', 'on'), 'Ducking (sidechain)')),
+      chainBadges(['buses', i], b.chain), h('div', { class: 'badges' }, badge('DUCK', P('duck', 'on'), 'Ducking (sidechain)')),
       h('div', { class: 'grs' }, h('div', { class: 'gr', title: 'Compression' }, comp), h('div', { class: 'gr lim', title: 'Limiter' }, lim), h('div', { class: 'gr duck', title: 'Ducking' }, duck)),
       h('div', { class: 'row' }, muteBtn(P('mute')), autoModeButton(`bus:${i}`)),
       faderBlock(P('fader'), [L, R], db), db);
@@ -205,15 +216,15 @@
     const m = S.mixer.master;
     const el = h('div', { class: 'strip master' });
     const thumb = h('canvas');
-    const ceil = bind(['master', 'limiter', 'ceiling'], Knob({ label: 'Ceiling', min: -6, max: 0, value: m.limiter.ceiling, def: -1, size: 28, format: fmt.db, onChange: v => setParam(['master', 'limiter', 'ceiling'], v) }));
+    const li = (m.chain || []).findIndex(x => x.type === 'limiter');
+    const ceil = li >= 0 ? bind(['master', 'chain', li, 'ceiling'], Knob({ label: 'Ceiling', min: -6, max: 0, value: m.chain[li].ceiling, def: -1, size: 28, format: fmt.db, onChange: v => setParam(['master', 'chain', li, 'ceiling'], v) })) : null;
     const db = h('div', { class: 'db' }, fmt.db(m.fader));
     const L = Meter(), R = Meter(), gr = h('i');
     el.append(h('div', { class: 'shead' }, h('span', { class: 'sicon' }, icon('broadcast', 20))),
       h('div', { class: 'sname', onclick: () => openEditor('master') }, 'MASTER'),
       h('div', { class: 'eqthumb', onclick: () => openEditor('master') }, thumb),
-      h('div', { class: 'badges' }, badge('EQ', ['master', 'eq', 'on']), badge('COMP', ['master', 'comp', 'on']), badge('SAT', ['master', 'sat', 'on']),
-        badge('MB', ['master', 'mbc', 'on']), badge('LIM', ['master', 'limiter', 'on'])),
-      h('div', { class: 'gr' }, gr), h('div', { class: 'cen' }, ceil.el),
+      chainBadges(['master'], m.chain),
+      h('div', { class: 'gr' }, gr), h('div', { class: 'cen' }, ceil ? ceil.el : null),
       h('div', { class: 'row' }, muteBtn(['master', 'mute']), autoModeButton('master')),
       faderBlock(['master', 'fader'], [L, R], db), db);
     masterEls = { thumb, L, R, gr };
@@ -237,16 +248,14 @@
   }
   function applyChannelPreset(c, name) {
     const p = CATALOG?.channelPresets?.[name]; if (!p) return;
-    for (const [k, v] of Object.entries(p)) {
-      if (k === 'sends') setParam(['channels', c, 'sends'], [...v]);
-      else setParam(['channels', c, k], { ...S.mixer.channels[c][k], ...JSON.parse(JSON.stringify(v)) });
-    }
+    setParam(['channels', c, 'chain'], freshChain(p.chain));
+    if (p.sends) setParam(['channels', c, 'sends'], [...p.sends]);
   }
   function applyBusPreset(t, name) {
     const p = CATALOG?.busPresets?.[name]; if (!p) return;
-    const base = pathOf(t), cur = objOf(t);
-    for (const [k, v] of Object.entries(p)) setParam([...base, k], { ...cur[k], ...JSON.parse(JSON.stringify(v)) });
+    setParam([...pathOf(t), 'chain'], freshChain(p.chain));
   }
+  window.applyBusPreset = applyBusPreset;
   window.applyChannelPreset = applyChannelPreset;
 
   // ---------------------------------------------------------- live updates
@@ -266,15 +275,15 @@
     if (ctl) ctl.set(getPath(S.mixer, path));
     if (path[0] === 'channels') {
       const s = stripEls.find(s => s.c === path[1]);
-      if (s && ['eq', 'hpf', 'lpf'].includes(path[2])) drawEqCurve(s.thumb, S.mixer.channels[s.c], fs());
-      if (['name', 'color', 'icon', 'out', 'input'].includes(path[2])) rebuildSoon();
+      if (s && path[2] === 'chain') drawEqCurve(s.thumb, chainEqView(S.mixer.channels[s.c]), fs());
+      if (['name', 'color', 'icon', 'out', 'input'].includes(path[2]) || (path[2] === 'chain' && path.length === 3)) rebuildSoon();
     }
     if (path[0] === 'buses') {
       const s = busEls.find(s => s.i === path[1]);
-      if (s && ['eq', 'hpf', 'lpf'].includes(path[2])) drawEqCurve(s.thumb, S.mixer.buses[s.i], fs());
-      if (['name', 'color', 'out'].includes(path[2])) rebuildSoon();
+      if (s && path[2] === 'chain') drawEqCurve(s.thumb, chainEqView(S.mixer.buses[s.i]), fs());
+      if (['name', 'color', 'out'].includes(path[2]) || (path[2] === 'chain' && path.length === 3)) rebuildSoon();
     }
-    if (path[0] === 'master' && masterEls && ['eq', 'hpf', 'lpf'].includes(path[1])) drawEqCurve(masterEls.thumb, S.mixer.master, fs());
+    if (path[0] === 'master' && masterEls && path[1] === 'chain') drawEqCurve(masterEls.thumb, chainEqView(S.mixer.master), fs());
     if (path[0] === 'fx' && ['type', 'name'].includes(path[2])) rebuildSoon();
     if (path[0] === 'order') { rebuildSoon(); emit('order'); }
     if (edTarget != null) edRefresh(path);
@@ -305,7 +314,7 @@
   on('session', () => $$('.strip .tog.auto').forEach(b => b.dispatchEvent(new Event('repaint'))));
 
   // ---------------------------------------------------------- scenes
-  const SCOPES = [['faders', 'Faders & pan'], ['mutes', 'Mutes'], ['eq', 'EQ & filters'], ['dynamics', 'Dynamics, saturation, limiter'],
+  const SCOPES = [['faders', 'Faders & pan'], ['mutes', 'Mutes'], ['processing', 'Processing chains (EQ, dynamics, plug-ins…)'],
     ['sends', 'FX sends'], ['fx', 'FX settings'], ['routing', 'Routing']];
   const DEF_SCOPE = ['faders', 'mutes', 'sends', 'fx'];
   function sceneScope() { try { return JSON.parse(localStorage.getItem('stobite.sceneScope')) || DEF_SCOPE; } catch (e) { return DEF_SCOPE; } }
@@ -351,8 +360,99 @@
         h('button', { class: 'mini', onclick: async () => { if (confirm('Delete scene ' + s + '?')) { await api('scene-delete', { name: s }); close(); renderSceneBar(); } } }, '✕'))));
   });
 
+  // ---------------------------------------------------------- mix settings (whole mix as files)
+  $('#btnMixSettings').onclick = () => modal(async (card, close) => {
+    card.classList.add('wide');
+    const lib = await api('settings-library');
+    const name = h('input', { placeholder: 'Name, e.g. "Sunday mix – home"', value: (S.session?.name || 'Mix') + ' mix', style: 'flex:1' });
+    const list = h('div', { class: 'list' });
+    const folderInput = h('input', { type: 'file', hidden: true, multiple: true, webkitdirectory: true, onchange: async e => {
+      const fd = new FormData();
+      for (const f of e.target.files) if (/\.stobite-(channel|mix)$/.test(f.name)) fd.append('file', f, f.webkitRelativePath || f.name);
+      const data = await tryApi('settings-upload', fd);
+      close(); mapMix(data);
+    } });
+    card.append(h('h3', {}, 'Mix settings'),
+      h('p', { class: 'hint' }, 'Carry your sound between computers. Saving makes a folder with one file per channel (e.g. “03 Piano.stobite-channel”) plus one for the buses, effects and master. Each channel file also goes into your sound library, so you can put “Piano” on any piano later.'),
+      h('h4', {}, 'Save this mix'),
+      h('div', { style: 'display:flex;gap:6px' }, name, h('button', { class: 'btn accent', onclick: async () => {
+        const r = await tryApi('mix-save', { name: name.value });
+        toast(`Saved ${r.channels} channels + buses, FX and master`); close();
+      } }, 'Save')),
+      h('h4', {}, 'Apply a saved mix'), list,
+      h('div', { class: 'acts' },
+        h('button', { class: 'btn', onclick: () => folderInput.click() }, icon('import', 14), 'From a folder…'), folderInput,
+        ['localhost', '127.0.0.1'].includes(location.hostname) ? h('button', { class: 'btn', onclick: () => api('reveal', undefined, '?what=presets') }, 'Show folder') : null,
+        h('button', { class: 'btn', onclick: close }, 'Close')));
+    if (!lib.mixes.length) list.append(h('p', { class: 'hint' }, 'No saved mixes yet.'));
+    for (const n of lib.mixes) list.append(h('div', { class: 'li', onclick: async () => { const d = await api('mix-read', undefined, '?name=' + encodeURIComponent(n)); close(); mapMix(d, n); } }, n, h('span', {}, 'Apply…')));
+  });
+
+  // match each saved channel to a channel here (by name, then instrument, then position), let the user adjust, apply
+  function mapMix(data, title) {
+    modal((card, close) => {
+      card.classList.add('wide');
+      const chans = data.channels || [];
+      const used = new Set();
+      const norm = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const guess = d => {
+        let c = S.mixer.channels.findIndex((ch, i) => !used.has(i) && norm(ch.name) === norm(d.name));
+        if (c < 0 && d.type) c = S.mixer.channels.findIndex((ch, i) => !used.has(i) && ch.type === d.type);
+        if (c < 0 && Number.isInteger(d.position)) { const o = S.mixer.order[d.position]; if (o != null && !used.has(o)) c = o; }
+        if (c >= 0) used.add(c);
+        return c;
+      };
+      const opts = { chain: true, sends: true, routing: true, identity: true, levels: false };
+      let globals = !!data.globals;
+      const box = (k, label) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: opts[k], onchange: e => opts[k] = e.target.checked }), label);
+      const rows = chans.map(d => {
+        const target = guess(d);
+        const sel_ = h('select', {}, h('option', { value: '-1' }, '— skip —'),
+          ...S.mixer.order.map(c => h('option', { value: c, selected: c === target }, `${c + 1}: ${S.mixer.channels[c].name}`)));
+        return { d, sel_, el: h('div', { class: 'maprow' }, icon(d.icon || 'input', 16), h('b', {}, d.name), h('span', { class: 'hint' }, (d.chain || []).map(m => CATALOG?.moduleTypes?.[m.type]?.short || m.type).join(' → ')), h('span', { class: 'farrow' }, '→'), sel_) };
+      });
+      card.append(h('h3', {}, 'Apply ' + (title || 'mix settings')),
+        h('p', { class: 'hint' }, 'Each saved channel is matched to a channel here by name, then instrument, then position. Change any match, or skip it.'),
+        h('div', { class: 'maplist' }, ...rows.map(r => r.el)),
+        h('div', { class: 'scope' }, box('chain', 'Processing chains'), box('sends', 'FX sends'), box('routing', 'Bus routing'), box('identity', 'Names, icons & colours'), box('levels', 'Faders, pan & gain'),
+          data.globals ? h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: true, onchange: e => globals = e.target.checked }), 'Buses, effects & master') : null),
+        h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel'), h('button', { class: 'btn accent', onclick: async () => {
+          const assign = rows.map(r => ({ ch: +r.sel_.value, data: r.d })).filter(a => a.ch >= 0);
+          await tryApi('settings-apply', { assign, opts, globals: globals ? data.globals : null });
+          toast(`Applied to ${assign.length} channels${globals ? ' + buses, effects and master' : ''}`); close();
+        } }, 'Apply')));
+    });
+  }
+  window.mapMix = mapMix;
+
   // ---------------------------------------------------------- editor
+  // Every channel, bus and the master has a processing CHAIN: an ordered list of modules.
+  // The sound goes through them top to bottom. Add any module any number of times,
+  // switch each on/off, duplicate, remove, and drag to reorder.
   let edLive = null, edCtl = new Map(), edRefresh = () => { };
+  const MOD_HELP = { eq: 'eq', gate: 'gate', comp: 'comp', deess: 'deess', dyneq: 'dyneq', trans: 'trans', sat: 'sat', tune: 'tune', mbc: 'mbc', limiter: 'limiter', width: 'stereo', plugin: 'inserts' };
+  const modInfo = t => CATALOG?.moduleTypes?.[t] || { label: t, short: t.toUpperCase() };
+  window.newModuleId = () => 'm' + Math.random().toString(36).slice(2, 9);
+  window.freshChain = ch => JSON.parse(JSON.stringify(ch || [])).map(m => ({ ...m, id: newModuleId() }));
+  const MOD_DEFAULTS = {
+    eq: () => ({ hpf: { on: false, freq: 80, slope: 24 }, lpf: { on: false, freq: 16000, slope: 12 }, bands: [
+      { type: 'lowshelf', freq: 100, gain: 0, q: 0.7, on: true, slope: 12 }, { type: 'bell', freq: 400, gain: 0, q: 1, on: true, slope: 12 },
+      { type: 'bell', freq: 2500, gain: 0, q: 1, on: true, slope: 12 }, { type: 'highshelf', freq: 8000, gain: 0, q: 0.7, on: true, slope: 12 }] }),
+    gate: () => ({ thr: -50, range: 40, att: 1, rel: 120 }),
+    comp: () => ({ thr: -18, ratio: 3, knee: 6, att: 10, rel: 150, makeup: 0, mix: 100, range: 30, sc: '' }),
+    deess: () => ({ freq: 6500, thr: -28, range: 8 }),
+    dyneq: () => ({ sc: '', bands: [{ on: true, type: 'bell', freq: 250, q: 1.2, gain: 0, thr: -24, range: -3, att: 10, rel: 150 },
+      { on: false, type: 'bell', freq: 3500, q: 2, gain: 0, thr: -26, range: -3, att: 3, rel: 100 }] }),
+    trans: () => ({ attack: 2, sustain: 0 }),
+    sat: () => ({ flavor: 'tape', drive: 3, mix: 100 }),
+    tune: () => ({ amount: 100, speed: 40, voice: 'any', scale: 'song' }),
+    mbc: () => ({ x1: 180, x2: 3500, bands: [{ thr: -20, ratio: 2, att: 30, rel: 250, gain: 0, range: 3 }, { thr: -18, ratio: 1.5, att: 20, rel: 200, gain: 0, range: 2 }, { thr: -22, ratio: 2, att: 10, rel: 150, gain: 0, range: 3 }] }),
+    width: () => ({ width: 100, balance: 0 }),
+    limiter: () => ({ ceiling: -1, threshold: 0, gain: 0, lookahead: 1.5, release: 150, truepeak: true }),
+  };
+  window.makeModule = (type, extra = {}) => ({ id: newModuleId(), type, on: true, ...(MOD_DEFAULTS[type] ? MOD_DEFAULTS[type]() : {}), ...extra });
+  const eqView = m => ({ hpf: m.hpf, lpf: m.lpf, eq: { on: m.on !== false, bands: m.bands } });
+
   window.openEditor = function (t) {
     if (t == null) return;
     const base = pathOf(t);
@@ -370,8 +470,12 @@
     $('#edName').value = st.name;
     $('#edName').disabled = kind === 'master';
     $('#edName').onchange = e => kind !== 'master' && setParam(P('name'), e.target.value);
-    const body = $('#edBody'); body.innerHTML = '';
-    const live = {};
+    const body = $('#edBody');
+    body.classList.toggle('static', !$('#editor').hidden && body.dataset.target === String(t));  // no fade-in when just refreshing
+    body.dataset.target = String(t);
+    body.innerHTML = '';
+    const live = { mods: {} };
+    const fns = { redraws: [] };
 
     // ---- signal flow breadcrumb
     const flow = h('div', { class: 'flow panel full' });
@@ -387,26 +491,30 @@
       }
       flow.append(step('Stream out', 'out'));
     };
-    if (kind === 'ch') { flow.append(step(inputLabel(st.input), 'in'), arrow(), step(st.name, 'cur'), arrow(), step('EQ · dynamics · inserts'), arrow(), step('sends → FX'), arrow()); chainFrom(st.out); }
-    else if (kind === 'bus') { flow.append(step('Channels routed here', 'in'), arrow(), step(st.name, 'cur'), arrow()); chainFrom(st.out); }
+    const chainWords = () => (st.chain || []).filter(m => m.on !== false).map(m => modInfo(m.type).short).join(' → ') || 'no processing';
+    if (kind === 'ch') { flow.append(step(inputLabel(st.input), 'in'), arrow(), step(st.name, 'cur'), arrow(), step(chainWords()), arrow(), step('sends → FX'), arrow()); chainFrom(st.out); }
+    else if (kind === 'bus') { flow.append(step('Channels routed here', 'in'), arrow(), step(st.name, 'cur'), arrow(), step(chainWords()), arrow()); chainFrom(st.out); }
     else if (kind === 'fx') { flow.append(step('Channel sends', 'in'), arrow(), step(st.name, 'cur'), arrow()); chainFrom(st.out); }
-    else flow.append(step('Broadcast & buses', 'in'), arrow(), step('Master chain', 'cur'), arrow(), step('Main outputs / stream', 'out'), arrow(), step('Virtual cables', 'out'));
+    else flow.append(step('Broadcast & buses', 'in'), arrow(), step(chainWords(), 'cur'), arrow(), step('Main outputs / stream', 'out'), arrow(), step('Virtual cables', 'out'));
     body.append(flow);
 
-    if (kind === 'fx') { buildFxEditor(t, st, body, P, K, T, S_, panel, live); finishEditor(t, kind, st, live); return; }
+    if (kind === 'fx') { buildFxEditor(t, st, body, P, K, T, S_, panel, live); finishEditor(t, kind, st, live, fns); return; }
 
-    // ---- input / routing
+    // ---- input / routing, presets and settings files
     if (kind === 'ch') {
       const presetSel = h('select', { onchange: e => { if (e.target.value) { applyChannelPreset(t, e.target.value); openEditor(t); toast('Loaded ' + e.target.value + ' starting point'); } } },
-        h('option', { value: '' }, 'Load a starting preset…'), ...Object.keys(CATALOG?.channelPresets || {}).map(n => h('option', { value: n }, n)));
+        h('option', { value: '' }, 'Load a built-in starting preset…'), ...Object.keys(CATALOG?.channelPresets || {}).map(n => h('option', { value: n }, n)));
       const inst = CATALOG?.instruments.find(i => i.key === st.type);
       body.append(panel('Input & routing', 'input', null,
         h('div', { class: 'frow' }, h('button', { class: 'btn', onclick: () => pickFor(t) }, icon(st.icon || 'input', 18), inst ? inst.label : 'Choose instrument…'),
           h('input', { type: 'color', value: st.color, class: 'colorpick', onchange: e => setParam(P('color'), e.target.value) })),
         h('div', { class: 'f2' }, h('span', {}, 'Input'), S_(P('input'), inputOptions())),
         h('div', { class: 'f2' }, h('span', {}, 'Output bus'), S_(P('out'), destOptions(), { onchange: () => openEditor(t) })),
-        presetSel,
         h('div', { class: 'knobs' }, K(P('trim'), { label: 'Gain / trim', min: -24, max: 24, def: 0, format: fmt.db, bipolar: true, size: 40, big: true }), T(P('phase'), 'Ø Phase')),
+        presetSel,
+        h('div', { class: 'frow' },
+          h('button', { class: 'btn', onclick: () => saveChannelSettings(t) }, icon('export', 14), 'Save this sound…'),
+          h('button', { class: 'btn', onclick: () => loadChannelSettings(t) }, icon('import', 14), 'Load a sound…')),
         h('p', { class: 'hint' }, 'Recording always captures the raw input, before any of this processing.')));
     } else {
       const presetSel = h('select', { onchange: e => { if (e.target.value) { applyBusPreset(t, e.target.value); openEditor(t); toast('Loaded ' + e.target.value); } } },
@@ -416,220 +524,56 @@
         kind === 'bus' ? h('div', { class: 'frow' }, h('input', { type: 'color', value: st.color, class: 'colorpick', onchange: e => setParam(P('color'), e.target.value) }),
           st.id !== 'broadcast' ? h('button', { class: 'btn danger', onclick: async () => { if (confirm('Remove bus ' + st.name + '? Anything routed to it moves to where it was going.')) { closeEd(); await tryApi('bus-remove', { id: st.id }); } } }, 'Remove bus') : null) : null,
         presetSel,
-        h('div', { class: 'knobs' }, K(P('width'), { label: 'Width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 36 }),
-          K(P('balance'), { label: 'Balance', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 36 }),
-          K(P('fader'), { label: 'Fader', min: -90, max: 10, def: 0, format: fmt.db, size: 36 }))));
+        h('div', { class: 'knobs' }, K(P('fader'), { label: 'Fader', min: -90, max: 10, def: 0, format: fmt.db, size: 36 }))));
     }
 
-    // ---- filters
-    const slopeOpts = [[12, '12 dB/oct'], [24, '24 dB/oct'], [48, '48 dB/oct']];
-    body.append(panel('Low cut / high cut', 'hpf', null,
-      h('div', { class: 'cutrow' }, T(P('hpf', 'on'), 'Low cut'), K(P('hpf', 'freq'), { label: 'Freq', min: 20, max: 1000, log: true, def: 80, format: fmt.hz, size: 36 }), S_(P('hpf', 'slope'), slopeOpts, { num: true })),
-      h('div', { class: 'cutrow' }, T(P('lpf', 'on'), 'High cut'), K(P('lpf', 'freq'), { label: 'Freq', min: 1000, max: 20000, log: true, def: 16000, format: fmt.hz, size: 36 }), S_(P('lpf', 'slope'), slopeOpts, { num: true })),
-      h('p', { class: 'hint' }, 'Leave the low end to kick and bass: cut lows on vocals, guitars, keys, overheads and FX.')));
-
-    // ---- EQ
-    const graph = h('canvas', { class: 'eqgraph' });
-    let activeBand = -1, liveSpec = null, edEq = null;
-    const bands = h('div', { class: 'eqbands' });
-    const TYPE_OPTS = [['bell', 'Bell'], ['lowshelf', 'Low shelf'], ['highshelf', 'High shelf'], ['notch', 'Notch'], ['hp', 'High-pass'], ['lp', 'Low-pass']];
-    st.eq.bands.forEach((b, i) => {
-      const bp = P('eq', 'bands', i);
-      const isCut = b.type === 'hp' || b.type === 'lp';
-      bands.append(h('div', { class: 'eqband', style: `border-color:${BAND_COLORS[i]}` },
-        h('div', { class: 'frow' }, S_([...bp, 'type'], TYPE_OPTS, { onchange: () => setTimeout(() => openEditor(t), 30) }), T([...bp, 'on'], String(i + 1))),
-        h('div', { class: 'knobs' }, K([...bp, 'freq'], { label: 'Freq', min: 20, max: 20000, log: true, def: b.freq, format: fmt.hz, size: 30, color: BAND_COLORS[i] }),
-          isCut ? S_([...bp, 'slope'], slopeOpts, { num: true }) : K([...bp, 'gain'], { label: 'Gain', min: -18, max: 18, def: 0, format: fmt.db, size: 30, bipolar: true, color: BAND_COLORS[i] }),
-          isCut ? null : K([...bp, 'q'], { label: 'Q', min: 0.1, max: 10, log: true, def: 1, format: fmt.q, size: 30, color: BAND_COLORS[i] }))));
+    // ---- the chain itself
+    const chain = st.chain || [];
+    const setChain = c => { setParam(P('chain'), c); openEditor(t); };
+    const allowed = Object.entries(CATALOG?.moduleTypes || {}).filter(([, v]) => kind === 'ch' ? v.ch : v.bus);
+    const addSel = h('select', { class: 'addmod', onchange: e => {
+      const ty = e.target.value; e.target.value = '';
+      if (!ty) return;
+      if (ty === 'plugin') return pickPlugin(P('chain'));
+      setChain([...objOf(t).chain, makeModule(ty)]);
+    } }, h('option', { value: '' }, '+ Add a processor…'), ...allowed.map(([k, v]) => h('option', { value: k }, v.label + (k === 'plugin' ? '…' : ''))));
+    const list = h('div', { class: 'chain-list' });
+    chain.forEach((m, i) => {
+      const row = h('div', { class: 'chain-item' + (m.on === false ? ' off' : ''), draggable: 'true' },
+        icon('drag', 14), h('b', { class: 'cnum' }, i + 1),
+        h('span', { class: 'n', onclick: () => $(`#mod-${m.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, m.type === 'plugin' ? (m.name || 'Plug-in') : modInfo(m.type).label),
+        h('button', { class: 'tog g' + (m.on !== false ? ' on' : ''), title: 'Bypass', onclick: () => { setParam(P('chain', i, 'on'), m.on === false); openEditor(t); } }, m.on !== false ? 'ON' : 'OFF'),
+        h('button', { class: 'mini', title: 'Move up', disabled: i === 0, onclick: () => { const c = [...chain]; [c[i - 1], c[i]] = [c[i], c[i - 1]]; setChain(c); } }, '↑'),
+        h('button', { class: 'mini', title: 'Move down', disabled: i === chain.length - 1, onclick: () => { const c = [...chain]; [c[i + 1], c[i]] = [c[i], c[i + 1]]; setChain(c); } }, '↓'),
+        h('button', { class: 'mini', title: 'Duplicate', onclick: () => { const c = [...chain]; c.splice(i + 1, 0, { ...JSON.parse(JSON.stringify(m)), id: newModuleId() }); setChain(c); } }, '⧉'),
+        h('button', { class: 'mini danger', title: 'Remove', onclick: () => setChain(chain.filter((_, j) => j !== i)) }, '✕'));
+      row.addEventListener('dragstart', e => { e.dataTransfer.setData('text/x-mod', String(i)); row.classList.add('dragging'); });
+      row.addEventListener('dragend', () => row.classList.remove('dragging'));
+      row.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('text/x-mod')) { e.preventDefault(); row.classList.add('dropto'); } });
+      row.addEventListener('dragleave', () => row.classList.remove('dropto'));
+      row.addEventListener('drop', e => { e.preventDefault(); const from = +e.dataTransfer.getData('text/x-mod'); if (isNaN(from) || from === i) return; const c = [...chain]; const [x] = c.splice(from, 1); c.splice(i, 0, x); setChain(c); });
+      list.append(row);
     });
-    const redrawEq = () => { edEq = drawEqCurve(graph, objOf(t), fs(), { grid: true, nodes: true, active: activeBand, spectrum: liveSpec }); };
-    graph.addEventListener('pointerdown', e => {
-      const r = graph.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-      if (!edEq) return;
-      let best = -1, bd = 22;
-      objOf(t).eq.bands.forEach((b, i) => { const d = Math.hypot(edEq.fx(b.freq) - x, edEq.gy(['notch', 'hp', 'lp'].includes(b.type) ? 0 : b.gain) - y); if (d < bd) { bd = d; best = i; } });
-      if (best < 0) return;
-      activeBand = best; graph.setPointerCapture(e.pointerId);
-      const bp = P('eq', 'bands', best);
-      if (!getPath(S.mixer, P('eq', 'on'))) setParam(P('eq', 'on'), true);
-      const mv = ev => {
-        const xx = clamp(ev.clientX - r.left, 0, edEq.W), yy = clamp(ev.clientY - r.top, 0, edEq.H);
-        const f = Math.round(20 * Math.pow(1000, xx / edEq.W));
-        const gn = Math.round(clamp((edEq.H / 2 - yy) / (edEq.H / 2 - 4) * edEq.range, -18, 18) * 10) / 10;
-        setParam([...bp, 'freq'], f); edCtl.get(key([...bp, 'freq']))?.set(f);
-        if (!['notch', 'hp', 'lp'].includes(getPath(S.mixer, [...bp, 'type']))) { setParam([...bp, 'gain'], gn); edCtl.get(key([...bp, 'gain']))?.set(gn); }
-        redrawEq();
-      };
-      const up = () => { graph.removeEventListener('pointermove', mv); graph.removeEventListener('pointerup', up); activeBand = -1; redrawEq(); };
-      graph.addEventListener('pointermove', mv); graph.addEventListener('pointerup', up);
-      redrawEq();
-    });
-    graph.addEventListener('wheel', e => {
-      if (!edEq) return; e.preventDefault();
-      const r = graph.getBoundingClientRect(), x = e.clientX - r.left;
-      let best = 0, bd = 1e9; objOf(t).eq.bands.forEach((b, i) => { const d = Math.abs(edEq.fx(b.freq) - x); if (d < bd) { bd = d; best = i; } });
-      const qp = P('eq', 'bands', best, 'q'); const q = clamp((getPath(S.mixer, qp) || 1) * (e.deltaY > 0 ? 0.92 : 1.08), 0.1, 10);
-      setParam(qp, Math.round(q * 100) / 100); edCtl.get(key(qp))?.set(q); redrawEq();
-    }, { passive: false });
-    graph.addEventListener('dblclick', e => {
-      const r = graph.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-      objOf(t).eq.bands.forEach((b, i) => { if (Math.hypot(edEq.fx(b.freq) - x, edEq.gy(b.gain) - y) < 14) { setParam(P('eq', 'bands', i, 'gain'), 0); edCtl.get(key(P('eq', 'bands', i, 'gain')))?.set(0); } });
-      redrawEq();
-    });
-    body.append(h('div', { class: 'panel wide' }, h('h4', {}, 'Parametric EQ', help('eq'), h('span', { class: 'hint lc' }, 'drag points · scroll = width · double-click = flat'), T(P('eq', 'on'))), graph, bands));
+    if (!chain.length) list.append(h('p', { class: 'hint' }, 'No processing yet. Add an EQ, compressor or anything else below.'));
+    body.append(h('div', { class: 'panel chainpanel' }, h('h4', {}, 'Processing chain', help('chain'), h('span', { class: 'hint lc' }, 'top to bottom = the order the sound goes through')),
+      list, h('div', { class: 'frow' }, addSel),
+      h('p', { class: 'hint' }, 'Drag to reorder. Order matters: EQ before a compressor changes what the compressor reacts to; saturation after it adds colour to the controlled sound. You can use any processor more than once.')));
 
-    // ---- dynamics
-    if (kind === 'ch') {
-      live.gate = h('span', { class: 'hint lc' });
-      body.append(panel('Gate / expander', 'gate', P('gate', 'on'),
-        h('div', { class: 'knobs' }, K(P('gate', 'thr'), { label: 'Threshold', min: -80, max: 0, def: -50, format: fmt.db, size: 38, big: true }),
-          K(P('gate', 'range'), { label: 'Range', min: 3, max: 80, def: 40, format: v => '-' + Math.round(v) + 'dB', size: 38, big: true }),
-          K(P('gate', 'att'), { label: 'Attack', min: 0.1, max: 50, log: true, def: 1, format: fmt.ms, size: 32 }),
-          K(P('gate', 'rel'), { label: 'Release', min: 10, max: 2000, log: true, def: 120, format: fmt.ms, size: 32 })), live.gate,
-        h('p', { class: 'hint' }, 'Small range (6–15 dB) works as a gentle expander; a large range is a hard gate.')));
-    }
-    const cg = h('canvas', { class: 'compgraph' });
-    live.grbar = h('i'); live.grTxt = h('span', { class: 'hint lc' });
-    const drawComp = () => {
-      const c = objOf(t).comp, dpr = devicePixelRatio || 1, W = 100, H = 100;
-      cg.width = W * dpr; cg.height = H * dpr; const g = cg.getContext('2d'); g.scale(dpr, dpr);
-      g.strokeStyle = '#1f2328'; for (let d = -60; d <= 0; d += 12) { const p = (d + 60) / 60 * W; g.beginPath(); g.moveTo(p, 0); g.lineTo(p, H); g.moveTo(0, H - p); g.lineTo(W, H - p); g.stroke(); }
-      g.beginPath();
-      for (let x = 0; x <= W; x++) {
-        const inp = -60 + x / W * 60, over = inp - c.thr, k = Math.max(c.knee, 0.01), sl = 1 - 1 / c.ratio;
-        const red = Math.min(over <= -k / 2 ? 0 : over >= k / 2 ? over * sl : sl * (over + k / 2) ** 2 / (2 * k), c.range ?? 60);
-        const out = inp - (c.on ? red : 0) + (c.on ? c.makeup : 0);
-        const y = H - (out + 60) / 60 * H; x ? g.lineTo(x, y) : g.moveTo(x, y);
-      }
-      g.strokeStyle = c.on ? '#f76b15' : '#555'; g.lineWidth = 2; g.stroke();
-    };
-    body.append(h('div', { class: 'panel' }, h('h4', {}, 'Compressor', help('comp'), live.grTxt, T(P('comp', 'on'))),
-      h('div', { class: 'compwrap' }, h('div', {}, cg, h('div', { class: 'grbar' }, live.grbar)), h('div', { class: 'knobs' },
-        K(P('comp', 'thr'), { label: 'Threshold', min: -60, max: 0, def: -18, format: fmt.db, size: 38, big: true }),
-        K(P('comp', 'ratio'), { label: 'Ratio', min: 1, max: 20, log: true, def: 3, format: fmt.ratio, size: 38, big: true }),
-        K(P('comp', 'att'), { label: 'Attack', min: 0.1, max: 200, log: true, def: 10, format: fmt.ms, size: 30 }),
-        K(P('comp', 'rel'), { label: 'Release', min: 10, max: 2000, log: true, def: 150, format: fmt.ms, size: 30 }),
-        K(P('comp', 'knee'), { label: 'Knee', min: 0, max: 24, def: 6, format: v => v.toFixed(0) + 'dB', size: 30 }),
-        K(P('comp', 'makeup'), { label: 'Makeup', min: 0, max: 24, def: 0, format: fmt.db, size: 30 }),
-        K(P('comp', 'mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 30 }),
-        K(P('comp', 'range'), { label: 'Max GR', min: 1, max: 40, def: 30, format: v => Math.round(v) + 'dB', size: 30 }))),
-      kind !== 'ch' ? h('div', { class: 'f2' }, h('span', {}, 'Sidechain from'), S_(P('comp', 'sc'), scOptions())) : null,
-      h('p', { class: 'hint' }, 'Mix below 100% = parallel compression: punch and density without losing dynamics.')));
+    // ---- one panel per module, in chain order
+    chain.forEach((m, i) => body.append(modulePanel(t, kind, m, i, P, K, T, S_, help, live, fns)));
 
-    if (kind === 'ch') {
-      live.dsBar = h('i'); live.dsTxt = h('span', { class: 'hint lc' });
-      body.append(panel('De-esser', 'deess', P('deess', 'on'),
-        h('div', { class: 'knobs' }, K(P('deess', 'freq'), { label: 'Frequency', min: 3000, max: 12000, log: true, def: 6500, format: fmt.hz, size: 36, big: true }),
-          K(P('deess', 'thr'), { label: 'Threshold', min: -60, max: 0, def: -28, format: fmt.db, size: 36, big: true }),
-          K(P('deess', 'range'), { label: 'Max cut', min: 1, max: 20, def: 8, format: v => '-' + v.toFixed(0) + 'dB', size: 30 })),
-        h('div', { class: 'grbar' }, live.dsBar), live.dsTxt));
-      const KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-      live.tuneNote = h('div', { class: 'tune-note' }, '—');
-      live.tuneNeedle = h('i');
-      live.tuneTxt = h('div', { class: 'hint' }, 'Sing or play to see the pitch');
-      body.append(panel('Auto-tune (pitch correction)', 'tune', P('tune', 'on'),
-        h('div', { class: 'tune-read' }, live.tuneNote, h('div', { class: 'tune-meter', title: 'How far off the singer is: centre = in tune' }, h('b'), live.tuneNeedle), live.tuneTxt),
-        h('div', { class: 'f2' }, h('span', {}, 'Song key'), h('div', { class: 'frow' },
-          S_(['song', 'key'], KEYS.map(k => [k, k])), S_(['song', 'scale'], [['major', 'Major'], ['minor', 'Minor'], ['harmonic minor', 'Harmonic minor'], ['pentatonic', 'Pentatonic']]))),
-        h('div', { class: 'f2' }, h('span', {}, 'Notes'), S_(P('tune', 'scale'), [['song', 'Song key (recommended)'], ['chromatic', 'Any note (chromatic)']])),
-        h('div', { class: 'f2' }, h('span', {}, 'Voice'), S_(P('tune', 'voice'), [['any', 'Any'], ['soprano', 'Soprano'], ['alto', 'Alto'], ['tenor', 'Tenor'], ['baritone', 'Baritone / bass']])),
-        h('div', { class: 'knobs' },
-          K(P('tune', 'speed'), { label: 'Retune speed', min: 0, max: 400, def: 40, format: v => v < 1 ? 'Robot' : Math.round(v) + 'ms', size: 38, big: true, color: '#b18cff' }),
-          K(P('tune', 'amount'), { label: 'Amount', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#b18cff' })),
-        h('div', { class: 'quick' },
-          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 80, amount: 60 }); openEditor(t); } }, 'Natural'),
-          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 30, amount: 100 }); openEditor(t); } }, 'Polished'),
-          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 0, amount: 100 }); openEditor(t); } }, 'Hard (effect)')),
-        h('p', { class: 'hint' }, 'Set the song key first. For worship, “Natural” (slow speed, partial amount) fixes pitchy notes without sounding tuned. Adds about 15 ms of delay to this channel only.')));
-      body.append(panel('Transient shaper', 'trans', P('trans', 'on'),
-        h('div', { class: 'knobs' }, K(P('trans', 'attack'), { label: 'Attack', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true }),
-          K(P('trans', 'sustain'), { label: 'Sustain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true })),
-        h('p', { class: 'hint' }, '+Attack = more stick and punch. −Sustain = tighter drums, less ring.')));
-    }
-
-    // ---- dynamic EQ
-    const dynBands = h('div', { class: 'dynbands' });
-    (st.dyneq?.bands || []).forEach((b, i) => {
-      const bp = P('dyneq', 'bands', i);
-      dynBands.append(h('div', { class: 'dynband' }, h('div', { class: 'frow' }, T([...bp, 'on'], 'Band ' + (i + 1)),
-        S_([...bp, 'type'], [['bell', 'Bell'], ['lowshelf', 'Low shelf'], ['highshelf', 'High shelf']])),
-        h('div', { class: 'knobs' },
-          K([...bp, 'freq'], { label: 'Freq', min: 20, max: 20000, log: true, def: 1000, format: fmt.hz, size: 30 }),
-          K([...bp, 'q'], { label: 'Q', min: 0.2, max: 8, log: true, def: 1.5, format: fmt.q, size: 30 }),
-          K([...bp, 'thr'], { label: 'Threshold', min: -60, max: 0, def: -24, format: fmt.db, size: 30 }),
-          K([...bp, 'range'], { label: 'Range', min: -12, max: 12, def: -3, format: fmt.db, bipolar: true, size: 30 }),
-          K([...bp, 'gain'], { label: 'Static', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 }),
-          K([...bp, 'att'], { label: 'Attack', min: 0.5, max: 100, log: true, def: 5, format: fmt.ms, size: 30 }),
-          K([...bp, 'rel'], { label: 'Release', min: 20, max: 1000, log: true, def: 120, format: fmt.ms, size: 30 }))));
-    });
-    body.append(h('div', { class: 'panel' + (kind === 'ch' ? '' : ' wide') }, h('h4', {}, 'Dynamic EQ', help('dyneq'), T(P('dyneq', 'on'))), dynBands,
-      kind !== 'ch' ? h('div', { class: 'f2' }, h('span', {}, 'Sidechain from'), S_(P('dyneq', 'sc'), scOptions())) : null,
-      h('p', { class: 'hint' }, 'Acts only when that band gets loud: tames harshness, mud or boom without dulling the quiet parts. Negative range cuts, positive boosts.')));
-
-    // ---- saturation
-    body.append(panel('Saturation', 'sat', P('sat', 'on'),
-      h('div', { class: 'frow' }, S_(P('sat', 'type'), [['tape', 'Tape'], ['tube', 'Tube'], ['console', 'Console'], ['soft', 'Soft clip']])),
-      h('div', { class: 'knobs' }, K(P('sat', 'drive'), { label: 'Drive', min: 0, max: 18, def: 3, format: v => '+' + v.toFixed(1) + 'dB', size: 38, big: true, color: '#ffb366' }),
-        K(P('sat', 'mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#ffb366' })),
-      h('p', { class: 'hint' }, 'Aim for density you feel, not distortion you hear.')));
-
-    // ---- bus-only: multiband, limiter, ducking, chain order
-    if (kind !== 'ch') {
-      live.mbc = h('div', { class: 'hint' });
-      body.append(h('div', { class: 'panel wide' }, h('h4', {}, 'Multiband compressor', help('mbc'), T(P('mbc', 'on'))),
-        h('div', { class: 'knobs' }, K(P('mbc', 'x1'), { label: 'Low/mid split', min: 60, max: 800, log: true, def: 180, format: fmt.hz, size: 34 }),
-          K(P('mbc', 'x2'), { label: 'Mid/high split', min: 1000, max: 10000, log: true, def: 3500, format: fmt.hz, size: 34 })),
-        h('div', { class: 'mbbands' }, ...(st.mbc?.bands || []).map((b, i) => h('div', { class: 'mbband' }, h('b', {}, ['Low', 'Mid', 'High'][i]),
-          h('div', { class: 'knobs' },
-            K(P('mbc', 'bands', i, 'thr'), { label: 'Threshold', min: -50, max: 0, def: -20, format: fmt.db, size: 30 }),
-            K(P('mbc', 'bands', i, 'ratio'), { label: 'Ratio', min: 1, max: 10, log: true, def: 2, format: fmt.ratio, size: 30 }),
-            K(P('mbc', 'bands', i, 'att'), { label: 'Attack', min: 1, max: 200, log: true, def: 20, format: fmt.ms, size: 30 }),
-            K(P('mbc', 'bands', i, 'rel'), { label: 'Release', min: 20, max: 1500, log: true, def: 200, format: fmt.ms, size: 30 }),
-            K(P('mbc', 'bands', i, 'range'), { label: 'Range', min: 1, max: 20, def: 3, format: v => '-' + v.toFixed(0) + 'dB', size: 30 }),
-            K(P('mbc', 'bands', i, 'gain'), { label: 'Gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 }))))),
-        live.mbc));
-      live.limTxt = h('span', { class: 'hint lc' }); live.limBar = h('i');
-      body.append(panel('Limiter', 'limiter', P('limiter', 'on'),
-        h('div', { class: 'knobs' },
-          K(P('limiter', 'threshold'), { label: 'Threshold', min: -12, max: 0, def: 0, format: fmt.db, size: 36, big: true }),
-          K(P('limiter', 'ceiling'), { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 36, big: true }),
-          K(P('limiter', 'release'), { label: 'Release', min: 10, max: 1000, log: true, def: 150, format: fmt.ms, size: 30 }),
-          K(P('limiter', 'lookahead'), { label: 'Lookahead', min: 0.5, max: 5, def: 1.5, format: v => v.toFixed(1) + 'ms', size: 30 }),
-          K(P('limiter', 'gain'), { label: 'Input gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 })),
-        h('div', { class: 'frow' }, T(P('limiter', 'truepeak'), 'True peak'), live.limTxt), h('div', { class: 'grbar' }, live.limBar),
-        h('p', { class: 'hint' }, 'A safety net that should only catch the loudest peaks (1–3 dB). If it works harder, turn the mix down.')));
-      if (kind === 'bus') {
-        live.duckBar = h('i'); live.duckTxt = h('span', { class: 'hint lc' });
-        body.append(panel('Ducking (sidechain)', 'duck', P('duck', 'on'),
-          h('div', { class: 'f2' }, h('span', {}, 'Duck when'), S_(P('duck', 'src'), scOptions())),
-          h('div', { class: 'knobs' }, K(P('duck', 'amount'), { label: 'Max duck', min: 0.5, max: 20, def: 2, format: v => '-' + v.toFixed(1) + 'dB', size: 34, big: true }),
-            K(P('duck', 'thr'), { label: 'Threshold', min: -60, max: 0, def: -30, format: fmt.db, size: 34, big: true }),
-            K(P('duck', 'ratio'), { label: 'Ratio', min: 1, max: 20, log: true, def: 4, format: fmt.ratio, size: 30 }),
-            K(P('duck', 'att'), { label: 'Attack', min: 1, max: 200, log: true, def: 15, format: fmt.ms, size: 30 }),
-            K(P('duck', 'rel'), { label: 'Release', min: 50, max: 3000, log: true, def: 400, format: fmt.ms, size: 30 })),
-          h('div', { class: 'grbar' }, live.duckBar), live.duckTxt,
-          h('p', { class: 'hint' }, 'Example: the Music bus dips 1–2 dB while the Lead Vocal sings, or while the preacher talks over a pad.')));
-      }
-      const NAMES = { eq: ['EQ & filters', ['eq', 'on']], comp: ['Compressor', ['comp', 'on']], sat: ['Saturation', ['sat', 'on']], dyneq: ['Dynamic EQ', ['dyneq', 'on']],
-        mbc: ['Multiband', ['mbc', 'on']], width: ['Width / balance', null], limiter: ['Limiter', ['limiter', 'on']] };
-      const chainBox = h('div', { class: 'chain-list' });
-      const renderChain = () => {
-        chainBox.innerHTML = '';
-        const chain = objOf(t).chain || Object.keys(NAMES);
-        chain.forEach((m, i) => {
-          const [label, onp] = NAMES[m] || [m, null];
-          const row = h('div', { class: 'chain-item', draggable: 'true' }, icon('drag', 14), h('span', { class: 'n' }, `${i + 1}. ${label}`),
-            onp ? T(P(...onp)) : h('span', { class: 'hint' }, 'always'),
-            h('button', { class: 'mini', disabled: i === 0, onclick: () => { const c = [...chain]; [c[i - 1], c[i]] = [c[i], c[i - 1]]; setParam(P('chain'), c); renderChain(); } }, '↑'),
-            h('button', { class: 'mini', disabled: i === chain.length - 1, onclick: () => { const c = [...chain]; [c[i + 1], c[i]] = [c[i], c[i + 1]]; setParam(P('chain'), c); renderChain(); } }, '↓'));
-          row.addEventListener('dragstart', e => e.dataTransfer.setData('text/plain', String(i)));
-          row.addEventListener('dragover', e => e.preventDefault());
-          row.addEventListener('drop', e => { e.preventDefault(); const from = +e.dataTransfer.getData('text/plain'); const c = [...chain]; const [x] = c.splice(from, 1); c.splice(i, 0, x); setParam(P('chain'), c); renderChain(); });
-          chainBox.append(row);
-        });
-      };
-      renderChain();
-      body.append(panel('Processing order', 'chain', null, chainBox, h('p', { class: 'hint' }, 'Drag (or use the arrows) to reorder. Each ON switch bypasses that processor instantly.')));
+    // ---- bus ducking
+    if (kind === 'bus') {
+      live.duckBar = h('i'); live.duckTxt = h('span', { class: 'hint lc' });
+      body.append(panel('Ducking (sidechain)', 'duck', P('duck', 'on'),
+        h('div', { class: 'f2' }, h('span', {}, 'Duck when'), S_(P('duck', 'src'), scOptions())),
+        h('div', { class: 'knobs' }, K(P('duck', 'amount'), { label: 'Max duck', min: 0.5, max: 20, def: 2, format: v => '-' + v.toFixed(1) + 'dB', size: 34, big: true }),
+          K(P('duck', 'thr'), { label: 'Threshold', min: -60, max: 0, def: -30, format: fmt.db, size: 34, big: true }),
+          K(P('duck', 'ratio'), { label: 'Ratio', min: 1, max: 20, log: true, def: 4, format: fmt.ratio, size: 30 }),
+          K(P('duck', 'att'), { label: 'Attack', min: 1, max: 200, log: true, def: 15, format: fmt.ms, size: 30 }),
+          K(P('duck', 'rel'), { label: 'Release', min: 50, max: 3000, log: true, def: 400, format: fmt.ms, size: 30 })),
+        h('div', { class: 'grbar' }, live.duckBar), live.duckTxt,
+        h('p', { class: 'hint' }, 'Example: the Music bus dips 1–2 dB while the Lead Vocal sings, or while the preacher talks over a pad. Ducking happens after the chain.')));
     }
 
     // ---- sends
@@ -638,57 +582,277 @@
         h('div', { class: 'knobs' }, ...S.mixer.fx.map((f, i) => K(P('sends', i), { label: '→ ' + f.name, min: -90, max: 10, def: -90, format: fmt.db, size: 34, color: '#3aa0ff' })),
           kind === 'ch' ? K(P('pan'), { label: 'Pan', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 38, big: true }) : null,
           kind === 'ch' ? K(P('fader'), { label: 'Fader', min: -90, max: 10, def: 0, format: fmt.db, size: 38, big: true }) : null),
-        h('p', { class: 'hint' }, 'Sends feed the shared reverbs and delay. Lead vocal: a little plate and delay. Backing vocals: more hall.')));
+        h('p', { class: 'hint' }, 'Sends feed the shared reverbs and delay, after the chain and the fader.')));
     }
-
-    body.append(insertsPanel(t, kind, st, panel));
-    finishEditor(t, kind, st, live, { redrawEq, drawComp, setSpec: s => { liveSpec = s; } });
+    finishEditor(t, kind, st, live, fns);
   };
+
+  // A panel for one module. P(...) addresses the strip; M(...) the module.
+  function modulePanel(t, kind, m, i, P, K, T, S_, help, live, fns) {
+    const M = (...p) => P('chain', i, ...p);
+    const label = m.type === 'plugin' ? (m.name || 'Plug-in') : modInfo(m.type).label;
+    const kids = [];
+    const slopeOpts = [[12, '12 dB/oct'], [24, '24 dB/oct'], [48, '48 dB/oct']];
+    const reading = h('span', { class: 'hint lc modread' });
+    live.mods[m.id] = { type: m.type, el: reading };
+    const bar = (cls = '') => { const i_ = h('i'); live.mods[m.id].bar = i_; return h('div', { class: 'grbar ' + cls }, i_); };
+    if (m.type === 'eq') {
+      const graph = h('canvas', { class: 'eqgraph' });
+      let active = -1, edEq = null;
+      const redraw = () => { edEq = drawEqCurve(graph, eqView(getPath(S.mixer, M())), S.info?.sr || 48000, { grid: true, nodes: true, active, spectrum: live.spec }); };
+      fns.redraws.push(redraw);
+      graph.addEventListener('pointerdown', e => {
+        const r = graph.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        if (!edEq) return;
+        let best = -1, bd = 22;
+        getPath(S.mixer, M('bands')).forEach((b, j) => { const d = Math.hypot(edEq.fx(b.freq) - x, edEq.gy(['notch', 'hp', 'lp'].includes(b.type) ? 0 : b.gain) - y); if (d < bd) { bd = d; best = j; } });
+        if (best < 0) return;
+        active = best; graph.setPointerCapture(e.pointerId);
+        const bp = M('bands', best);
+        const mv = ev => {
+          const xx = clamp(ev.clientX - r.left, 0, edEq.W), yy = clamp(ev.clientY - r.top, 0, edEq.H);
+          const f = Math.round(20 * Math.pow(1000, xx / edEq.W));
+          const gn = Math.round(clamp((edEq.H / 2 - yy) / (edEq.H / 2 - 4) * edEq.range, -18, 18) * 10) / 10;
+          setParam([...bp, 'freq'], f); edCtl.get(key([...bp, 'freq']))?.set(f);
+          if (!['notch', 'hp', 'lp'].includes(getPath(S.mixer, [...bp, 'type']))) { setParam([...bp, 'gain'], gn); edCtl.get(key([...bp, 'gain']))?.set(gn); }
+          redraw();
+        };
+        const up = () => { graph.removeEventListener('pointermove', mv); graph.removeEventListener('pointerup', up); active = -1; redraw(); };
+        graph.addEventListener('pointermove', mv); graph.addEventListener('pointerup', up);
+      });
+      graph.addEventListener('wheel', e => {
+        if (!edEq) return; e.preventDefault();
+        const r = graph.getBoundingClientRect(), x = e.clientX - r.left;
+        let best = 0, bd = 1e9; getPath(S.mixer, M('bands')).forEach((b, j) => { const d = Math.abs(edEq.fx(b.freq) - x); if (d < bd) { bd = d; best = j; } });
+        const qp = M('bands', best, 'q'); const q = clamp((getPath(S.mixer, qp) || 1) * (e.deltaY > 0 ? 0.92 : 1.08), 0.1, 10);
+        setParam(qp, Math.round(q * 100) / 100); edCtl.get(key(qp))?.set(q); redraw();
+      }, { passive: false });
+      graph.addEventListener('dblclick', e => {
+        const r = graph.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        getPath(S.mixer, M('bands')).forEach((b, j) => { if (Math.hypot(edEq.fx(b.freq) - x, edEq.gy(b.gain) - y) < 14) { setParam(M('bands', j, 'gain'), 0); edCtl.get(key(M('bands', j, 'gain')))?.set(0); } });
+        redraw();
+      });
+      const TYPE_OPTS = [['bell', 'Bell'], ['lowshelf', 'Low shelf'], ['highshelf', 'High shelf'], ['notch', 'Notch'], ['hp', 'High-pass'], ['lp', 'Low-pass']];
+      const bands = h('div', { class: 'eqbands' });
+      (m.bands || []).forEach((b, j) => {
+        const bp = M('bands', j), isCut = b.type === 'hp' || b.type === 'lp';
+        bands.append(h('div', { class: 'eqband', style: `border-color:${BAND_COLORS[j % 4]}` },
+          h('div', { class: 'frow' }, S_([...bp, 'type'], TYPE_OPTS, { onchange: () => setTimeout(() => openEditor(t), 30) }), T([...bp, 'on'], String(j + 1))),
+          h('div', { class: 'knobs' }, K([...bp, 'freq'], { label: 'Freq', min: 20, max: 20000, log: true, def: b.freq, format: fmt.hz, size: 30, color: BAND_COLORS[j % 4] }),
+            isCut ? S_([...bp, 'slope'], slopeOpts, { num: true }) : K([...bp, 'gain'], { label: 'Gain', min: -18, max: 18, def: 0, format: fmt.db, size: 30, bipolar: true, color: BAND_COLORS[j % 4] }),
+            isCut ? null : K([...bp, 'q'], { label: 'Q', min: 0.1, max: 10, log: true, def: 1, format: fmt.q, size: 30, color: BAND_COLORS[j % 4] }))));
+      });
+      kids.push(
+        h('div', { class: 'cutrow' }, T(M('hpf', 'on'), 'Low cut'), K(M('hpf', 'freq'), { label: 'Freq', min: 20, max: 1000, log: true, def: 80, format: fmt.hz, size: 34 }), S_(M('hpf', 'slope'), slopeOpts, { num: true }),
+          T(M('lpf', 'on'), 'High cut'), K(M('lpf', 'freq'), { label: 'Freq', min: 1000, max: 20000, log: true, def: 16000, format: fmt.hz, size: 34 }), S_(M('lpf', 'slope'), slopeOpts, { num: true })),
+        graph, bands, h('p', { class: 'hint' }, 'Drag points · scroll over a point = width · double-click = flat. Keep the low end for kick and bass.'));
+    } else if (m.type === 'gate') {
+      kids.push(h('div', { class: 'knobs' }, K(M('thr'), { label: 'Threshold', min: -80, max: 0, def: -50, format: fmt.db, size: 38, big: true }),
+        K(M('range'), { label: 'Range', min: 3, max: 80, def: 40, format: v => '-' + Math.round(v) + 'dB', size: 38, big: true }),
+        K(M('att'), { label: 'Attack', min: 0.1, max: 50, log: true, def: 1, format: fmt.ms, size: 32 }),
+        K(M('rel'), { label: 'Release', min: 10, max: 2000, log: true, def: 120, format: fmt.ms, size: 32 })), bar(),
+        h('p', { class: 'hint' }, 'Small range (6–15 dB) works as a gentle expander; a large range is a hard gate.'));
+    } else if (m.type === 'comp') {
+      const cg = h('canvas', { class: 'compgraph' });
+      const drawComp = () => {
+        const c = getPath(S.mixer, M()), dpr = devicePixelRatio || 1, W = 100, H = 100;
+        if (!c) return;
+        cg.width = W * dpr; cg.height = H * dpr; const g = cg.getContext('2d'); g.scale(dpr, dpr);
+        g.strokeStyle = '#1f2328'; for (let d = -60; d <= 0; d += 12) { const p = (d + 60) / 60 * W; g.beginPath(); g.moveTo(p, 0); g.lineTo(p, H); g.moveTo(0, H - p); g.lineTo(W, H - p); g.stroke(); }
+        g.beginPath();
+        for (let x = 0; x <= W; x++) {
+          const inp = -60 + x / W * 60, over = inp - c.thr, k = Math.max(c.knee, 0.01), sl = 1 - 1 / c.ratio;
+          const red = Math.min(over <= -k / 2 ? 0 : over >= k / 2 ? over * sl : sl * (over + k / 2) ** 2 / (2 * k), c.range ?? 60);
+          const out = inp - red + c.makeup;
+          const y = H - (out + 60) / 60 * H; x ? g.lineTo(x, y) : g.moveTo(x, y);
+        }
+        g.strokeStyle = c.on !== false ? '#f76b15' : '#555'; g.lineWidth = 2; g.stroke();
+      };
+      fns.redraws.push(drawComp);
+      kids.push(h('div', { class: 'compwrap' }, h('div', {}, cg, bar()), h('div', { class: 'knobs' },
+        K(M('thr'), { label: 'Threshold', min: -60, max: 0, def: -18, format: fmt.db, size: 38, big: true }),
+        K(M('ratio'), { label: 'Ratio', min: 1, max: 20, log: true, def: 3, format: fmt.ratio, size: 38, big: true }),
+        K(M('att'), { label: 'Attack', min: 0.1, max: 200, log: true, def: 10, format: fmt.ms, size: 30 }),
+        K(M('rel'), { label: 'Release', min: 10, max: 2000, log: true, def: 150, format: fmt.ms, size: 30 }),
+        K(M('knee'), { label: 'Knee', min: 0, max: 24, def: 6, format: v => v.toFixed(0) + 'dB', size: 30 }),
+        K(M('makeup'), { label: 'Makeup', min: 0, max: 24, def: 0, format: fmt.db, size: 30 }),
+        K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 30 }),
+        K(M('range'), { label: 'Max GR', min: 1, max: 40, def: 30, format: v => Math.round(v) + 'dB', size: 30 }))),
+        kind !== 'ch' ? h('div', { class: 'f2' }, h('span', {}, 'Sidechain from'), S_(M('sc'), scOptions())) : null,
+        h('p', { class: 'hint' }, 'Mix below 100% = parallel compression. Two gentle compressors in a row often sound smoother than one hard one.'));
+    } else if (m.type === 'deess') {
+      kids.push(h('div', { class: 'knobs' }, K(M('freq'), { label: 'Frequency', min: 3000, max: 12000, log: true, def: 6500, format: fmt.hz, size: 36, big: true }),
+        K(M('thr'), { label: 'Threshold', min: -60, max: 0, def: -28, format: fmt.db, size: 36, big: true }),
+        K(M('range'), { label: 'Max cut', min: 1, max: 20, def: 8, format: v => '-' + v.toFixed(0) + 'dB', size: 30 })), bar());
+    } else if (m.type === 'dyneq') {
+      const dyn = h('div', { class: 'dynbands' });
+      (m.bands || []).forEach((b, j) => {
+        const bp = M('bands', j);
+        dyn.append(h('div', { class: 'dynband' }, h('div', { class: 'frow' }, T([...bp, 'on'], 'Band ' + (j + 1)),
+          S_([...bp, 'type'], [['bell', 'Bell'], ['lowshelf', 'Low shelf'], ['highshelf', 'High shelf']])),
+          h('div', { class: 'knobs' },
+            K([...bp, 'freq'], { label: 'Freq', min: 20, max: 20000, log: true, def: 1000, format: fmt.hz, size: 30 }),
+            K([...bp, 'q'], { label: 'Q', min: 0.2, max: 8, log: true, def: 1.5, format: fmt.q, size: 30 }),
+            K([...bp, 'thr'], { label: 'Threshold', min: -60, max: 0, def: -24, format: fmt.db, size: 30 }),
+            K([...bp, 'range'], { label: 'Range', min: -12, max: 12, def: -3, format: fmt.db, bipolar: true, size: 30 }),
+            K([...bp, 'gain'], { label: 'Static', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 }),
+            K([...bp, 'att'], { label: 'Attack', min: 0.5, max: 100, log: true, def: 5, format: fmt.ms, size: 30 }),
+            K([...bp, 'rel'], { label: 'Release', min: 20, max: 1000, log: true, def: 120, format: fmt.ms, size: 30 }))));
+      });
+      kids.push(dyn, kind !== 'ch' ? h('div', { class: 'f2' }, h('span', {}, 'Sidechain from'), S_(M('sc'), scOptions())) : null,
+        h('p', { class: 'hint' }, 'Acts only when that band gets loud. Negative range cuts, positive boosts.'));
+    } else if (m.type === 'trans') {
+      kids.push(h('div', { class: 'knobs' }, K(M('attack'), { label: 'Attack', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true }),
+        K(M('sustain'), { label: 'Sustain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true })),
+        h('p', { class: 'hint' }, '+Attack = more stick and punch. −Sustain = tighter, less ring.'));
+    } else if (m.type === 'sat') {
+      kids.push(h('div', { class: 'frow' }, S_(M('flavor'), [['tape', 'Tape'], ['tube', 'Tube'], ['console', 'Console'], ['soft', 'Soft clip']])),
+        h('div', { class: 'knobs' }, K(M('drive'), { label: 'Drive', min: 0, max: 18, def: 3, format: v => '+' + v.toFixed(1) + 'dB', size: 38, big: true, color: '#ffb366' }),
+          K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#ffb366' })),
+        h('p', { class: 'hint' }, 'Aim for density you feel, not distortion you hear.'));
+    } else if (m.type === 'tune') {
+      const KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      const note = h('div', { class: 'tune-note' }, '—'), needle = h('i'), txt = h('div', { class: 'hint' }, 'Sing or play to see the pitch');
+      Object.assign(live.mods[m.id], { note, needle, txt });
+      kids.push(h('div', { class: 'tune-read' }, note, h('div', { class: 'tune-meter' }, h('b'), needle), txt),
+        h('div', { class: 'f2' }, h('span', {}, 'Song key'), h('div', { class: 'frow' },
+          S_(['song', 'key'], KEYS.map(k => [k, k])), S_(['song', 'scale'], [['major', 'Major'], ['minor', 'Minor'], ['harmonic minor', 'Harmonic minor'], ['pentatonic', 'Pentatonic']]))),
+        h('div', { class: 'f2' }, h('span', {}, 'Notes'), S_(M('scale'), [['song', 'Song key'], ['chromatic', 'Any note']])),
+        h('div', { class: 'f2' }, h('span', {}, 'Voice'), S_(M('voice'), [['any', 'Any'], ['soprano', 'Soprano'], ['alto', 'Alto'], ['tenor', 'Tenor'], ['baritone', 'Baritone / bass']])),
+        h('div', { class: 'knobs' },
+          K(M('speed'), { label: 'Retune speed', min: 0, max: 400, def: 40, format: v => v < 1 ? 'Robot' : Math.round(v) + 'ms', size: 38, big: true, color: '#b18cff' }),
+          K(M('amount'), { label: 'Amount', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#b18cff' })),
+        h('div', { class: 'quick' },
+          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 80); setParam(M('amount'), 60); openEditor(t); } }, 'Natural'),
+          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 30); setParam(M('amount'), 100); openEditor(t); } }, 'Polished'),
+          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 0); setParam(M('amount'), 100); openEditor(t); } }, 'Hard (effect)')));
+    } else if (m.type === 'mbc') {
+      kids.push(h('div', { class: 'knobs' }, K(M('x1'), { label: 'Low/mid split', min: 60, max: 800, log: true, def: 180, format: fmt.hz, size: 34 }),
+        K(M('x2'), { label: 'Mid/high split', min: 1000, max: 10000, log: true, def: 3500, format: fmt.hz, size: 34 })),
+        h('div', { class: 'mbbands' }, ...(m.bands || []).map((b, j) => h('div', { class: 'mbband' }, h('b', {}, ['Low', 'Mid', 'High'][j]),
+          h('div', { class: 'knobs' },
+            K(M('bands', j, 'thr'), { label: 'Threshold', min: -50, max: 0, def: -20, format: fmt.db, size: 30 }),
+            K(M('bands', j, 'ratio'), { label: 'Ratio', min: 1, max: 10, log: true, def: 2, format: fmt.ratio, size: 30 }),
+            K(M('bands', j, 'att'), { label: 'Attack', min: 1, max: 200, log: true, def: 20, format: fmt.ms, size: 30 }),
+            K(M('bands', j, 'rel'), { label: 'Release', min: 20, max: 1500, log: true, def: 200, format: fmt.ms, size: 30 }),
+            K(M('bands', j, 'range'), { label: 'Range', min: 1, max: 20, def: 3, format: v => '-' + v.toFixed(0) + 'dB', size: 30 }),
+            K(M('bands', j, 'gain'), { label: 'Gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 }))))));
+    } else if (m.type === 'width') {
+      kids.push(h('div', { class: 'knobs' }, K(M('width'), { label: 'Width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#3aa0ff' }),
+        K(M('balance'), { label: 'Balance', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 38, big: true })),
+        h('p', { class: 'hint' }, 'Wider than 120% risks mono problems on phones; check the correlation meter on the Master tab.'));
+    } else if (m.type === 'limiter') {
+      kids.push(h('div', { class: 'knobs' },
+        K(M('threshold'), { label: 'Threshold', min: -12, max: 0, def: 0, format: fmt.db, size: 36, big: true }),
+        K(M('ceiling'), { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 36, big: true }),
+        K(M('release'), { label: 'Release', min: 10, max: 1000, log: true, def: 150, format: fmt.ms, size: 30 }),
+        K(M('lookahead'), { label: 'Lookahead', min: 0.5, max: 5, def: 1.5, format: v => v.toFixed(1) + 'ms', size: 30 }),
+        K(M('gain'), { label: 'Input gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 })),
+        h('div', { class: 'frow' }, T(M('truepeak'), 'True peak')), bar('lim'),
+        h('p', { class: 'hint' }, 'A safety net that should only catch the loudest peaks (1–3 dB).'));
+    } else if (m.type === 'plugin') {
+      const params = h('div', { class: 'params' }, m.failed ? h('p', { class: 'err' }, 'This plug-in isn’t installed on this computer, so it is skipped. Settings are kept for when it is.') : 'Loading settings…');
+      if (!m.failed) (async () => {
+        const ps = await api('plugin-params', undefined, '?mid=' + encodeURIComponent(m.id)).catch(() => []);
+        params.innerHTML = '';
+        if (!ps.length) params.append(h('p', { class: 'hint' }, 'This plug-in exposes no settings.'));
+        for (const p of ps) {
+          const rng = h('input', { type: 'range', min: 0, max: 1, step: 0.001, value: p.value });
+          const tv = h('span', { class: 'pv' }, p.text + (p.label ? ' ' + p.label : ''));
+          rng.oninput = () => api('plugin-param', { path: M(), key: p.key, v: +rng.value });
+          rng.onchange = async () => { const fresh = await api('plugin-params', undefined, '?mid=' + encodeURIComponent(m.id)); const q = fresh.find(x => x.key === p.key); if (q) tv.textContent = q.text + (q.label ? ' ' + q.label : ''); };
+          params.append(h('label', {}, h('span', {}, p.name), rng, tv));
+        }
+      })();
+      kids.push(h('p', { class: 'hint', title: m.path }, m.path), params);
+    }
+    const on = m.on !== false;
+    const wide = m.type === 'eq' || m.type === 'mbc' || (m.type === 'dyneq' && kind !== 'ch');
+    return h('div', { class: 'panel module' + (wide ? ' wide' : '') + (on ? '' : ' off'), id: 'mod-' + m.id },
+      h('h4', {}, h('b', { class: 'cnum' }, i + 1), label, help(MOD_HELP[m.type] || 'chain'), reading,
+        h('button', { class: 'tog g' + (on ? ' on' : ''), title: 'Bypass this processor', onclick: () => { setParam(M('on'), !on); openEditor(t); } }, on ? 'ON' : 'OFF')),
+      ...kids);
+  }
 
   function finishEditor(t, kind, st, live, fns = {}) {
     edLive = m => {
-      if (kind === 'ch') {
-        const gr = m.gr[t] || 0;
-        live.grbar.style.width = Math.min(100, gr * 5) + '%'; live.grTxt.textContent = gr > 0.1 ? `-${gr.toFixed(1)} dB` : '';
-        live.gate.textContent = objOf(t).gate.on ? ((m.gg[t] || 0) > 3 ? '● closed' : '○ open') : '';
-        const ds = m.ds?.[t] || 0; live.dsBar.style.width = Math.min(100, ds * 8) + '%'; live.dsTxt.textContent = ds > 0.1 ? `-${ds.toFixed(1)} dB` : '';
-        const at = m.at?.[t];
-        if (live.tuneNote) {
-          if (at) {
-            live.tuneNote.textContent = at.note;
-            live.tuneNeedle.style.left = `calc(50% + ${clamp(at.cents, -50, 50)}%)`;
-            live.tuneNeedle.style.background = Math.abs(at.cents) < 10 ? 'var(--green)' : Math.abs(at.cents) < 25 ? 'var(--yellow)' : 'var(--red)';
-            live.tuneTxt.textContent = `${at.hz} Hz · sung ${at.cents > 0 ? '+' : ''}${at.cents} cents · corrected ${at.shift > 0 ? '+' : ''}${at.shift} cents`;
-          } else if (!objOf(t).tune.on) { live.tuneNote.textContent = '—'; live.tuneTxt.textContent = 'Turn on to detect pitch'; }
-        }
-        if (m.csp && fns.setSpec) {
-          const prev = live._spec;
-          live._spec = prev && prev.length === m.csp.length ? m.csp.map((v, i) => Math.max(v, prev[i] - 1.5)) : m.csp;
-          fns.setSpec(live._spec); fns.redrawEq();
-        }
-      } else if (kind === 'bus' || kind === 'master') {
-        const bm = kind === 'master' ? m.mm : m.bm?.[st.id];
-        if (!bm) return;
-        live.grbar.style.width = Math.min(100, bm.gr * 6) + '%'; live.grTxt.textContent = bm.gr > 0.1 ? `-${bm.gr.toFixed(1)} dB` : '';
-        live.limBar.style.width = Math.min(100, bm.lim * 6) + '%'; live.limTxt.textContent = bm.lim > 0.1 ? `limiting -${bm.lim.toFixed(1)} dB` : '';
-        if (live.duckBar) { live.duckBar.style.width = Math.min(100, bm.duck * 8) + '%'; live.duckTxt.textContent = bm.duck > 0.1 ? `ducking -${bm.duck.toFixed(1)} dB` : ''; }
-        if (live.mbc) live.mbc.textContent = bm.mbc ? 'Gain reduction: low ' + bm.mbc[0] + ' · mid ' + bm.mbc[1] + ' · high ' + bm.mbc[2] + ' dB' : '';
-      } else if (kind === 'fx' && live.duckBar) {
-        const d = m.fxd?.[+String(t).slice(3)] || 0; live.duckBar.style.width = Math.min(100, d * 8) + '%'; live.duckTxt.textContent = d > 0.1 ? `ducking -${d.toFixed(1)} dB` : '';
+      // spectrum behind every EQ in this channel's chain
+      if (kind === 'ch' && m.csp) {
+        const prev = live.spec;
+        live.spec = prev && prev.length === m.csp.length ? m.csp.map((v, i) => Math.max(v, prev[i] - 1.5)) : m.csp;
+        fns.redraws.forEach(f => f());
+      }
+      const mods = m.mods || {};
+      for (const [mid, ui] of Object.entries(live.mods || {})) {
+        const v = mods[mid];
+        if (ui.type === 'tune') {
+          if (v) {
+            ui.note.textContent = v.note;
+            ui.needle.style.left = `calc(50% + ${clamp(v.cents, -50, 50)}%)`;
+            ui.needle.style.background = Math.abs(v.cents) < 10 ? 'var(--green)' : Math.abs(v.cents) < 25 ? 'var(--yellow)' : 'var(--red)';
+            ui.txt.textContent = `${v.hz} Hz · sung ${v.cents > 0 ? '+' : ''}${v.cents} cents · corrected ${v.shift > 0 ? '+' : ''}${v.shift} cents`;
+          }
+        } else if (typeof v === 'number') {
+          if (ui.bar) ui.bar.style.width = Math.min(100, v * 6) + '%';
+          ui.el.textContent = v > 0.1 ? (ui.type === 'gate' ? (v > 3 ? '● closed' : '○ open') : `-${v.toFixed(1)} dB`) : '';
+        } else if (Array.isArray(v) && ui.type === 'mbc') ui.el.textContent = 'low ' + v[0] + ' · mid ' + v[1] + ' · high ' + v[2] + ' dB';
+        else if (Array.isArray(v) && ui.type === 'dyneq') ui.el.textContent = v.some(x => Math.abs(x) > 0.1) ? v.map(x => (x > 0 ? '+' : '') + x).join(' / ') + ' dB' : '';
+      }
+      if (live.duckBar) {
+        const d = kind === 'fx' ? (m.fxd?.[+String(t).slice(3)] || 0) : (m.bm?.[st.id]?.duck || 0);
+        live.duckBar.style.width = Math.min(100, d * 8) + '%'; live.duckTxt.textContent = d > 0.1 ? `ducking -${d.toFixed(1)} dB` : '';
       }
     };
     const baseKey = key(pathOf(t));
     edRefresh = path => {
       const k = key(path);
+      if (k === baseKey + '/chain') return openEditor(t);   // chain changed elsewhere (e.g. a phone)
       if (!(k === baseKey || k.startsWith(baseKey + '/'))) return;
       const c = edCtl.get(k); if (c) c.set(getPath(S.mixer, path));
-      if (fns.drawComp && path.includes('comp')) fns.drawComp();
-      if (fns.redrawEq && (path.includes('eq') || path.includes('hpf') || path.includes('lpf'))) fns.redrawEq();
+      if (path.includes('chain')) fns.redraws.forEach(f => f());
     };
-    send({ t: 'focus', ch: kind === 'ch' ? t : null });
+    const target = kind === 'ch' ? 'ch:' + t : kind === 'bus' ? 'bus:' + st.id : kind === 'master' ? 'master' : null;
+    send({ t: 'focus', ch: kind === 'ch' ? t : null, target });
     $('#editor').hidden = false;
-    requestAnimationFrame(() => { fns.redrawEq && fns.redrawEq(); fns.drawComp && fns.drawComp(); });
+    requestAnimationFrame(() => fns.redraws.forEach(f => f()));
   }
+
+  // ---------------------------------------------------------- channel sound files
+  async function saveChannelSettings(c) {
+    const ch = S.mixer.channels[c];
+    const name = prompt('Save this channel’s sound as (e.g. "Piano – Sunday"):', ch.name);
+    if (!name) return;
+    const r = await tryApi('channel-save', { ch: c, name });
+    toast(`Saved “${name}”: apply it to any channel with “Load a sound…”`);
+    return r;
+  }
+  window.loadChannelSettings = function (c) {
+    modal(async (card, close) => {
+      const lib = await api('settings-library');
+      const list = h('div', { class: 'list' });
+      const opts = { chain: true, sends: true, routing: true, identity: false, levels: false };
+      const box = (k, label) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: opts[k], onchange: e => opts[k] = e.target.checked }), label);
+      const apply = async data => {
+        await tryApi('settings-apply', { assign: [{ ch: c, data }], opts });
+        toast(`Applied “${data.name}” to ${S.mixer.channels[c].name}`); close(); setTimeout(() => openEditor(c), 150);
+      };
+      const file = h('input', { type: 'file', accept: '.stobite-channel,application/json', hidden: true, onchange: async e => {
+        const fd = new FormData(); for (const f of e.target.files) fd.append('file', f, f.name);
+        const r = await tryApi('settings-upload', fd); if (r.channels[0]) apply(r.channels[0]);
+      } });
+      card.append(h('h3', {}, 'Load a sound onto ' + S.mixer.channels[c].name),
+        h('p', { class: 'hint' }, 'Sounds you saved (from any channel or any computer). Applying replaces this channel’s processing chain.'),
+        h('div', { class: 'scope' }, box('chain', 'Processing chain'), box('sends', 'FX sends'), box('routing', 'Bus routing'), box('identity', 'Name, icon & colour'), box('levels', 'Fader, pan & gain')),
+        list,
+        h('div', { class: 'acts' },
+          h('button', { class: 'btn', onclick: () => file.click() }, icon('import', 14), 'From a file…'), file,
+          ['localhost', '127.0.0.1'].includes(location.hostname) ? h('button', { class: 'btn', onclick: () => api('reveal', undefined, '?what=presets') }, 'Show folder') : null,
+          h('button', { class: 'btn', onclick: close }, 'Cancel')));
+      if (!lib.channels.length) list.append(h('p', { class: 'hint' }, 'No saved sounds yet. Use “Save this sound…” on a channel you like.'));
+      for (const n of lib.channels) list.append(h('div', { class: 'li', onclick: async () => apply(await api('channel-read', undefined, '?name=' + encodeURIComponent(n))) }, n,
+        h('span', {}, h('button', { class: 'mini', onclick: async e => { e.stopPropagation(); if (confirm('Delete saved sound ' + n + '?')) { await api('channel-delete', { name: n }); close(); loadChannelSettings(c); } } }, '✕'))));
+    });
+  };
 
   function buildFxEditor(t, st, body, P, K, T, S_, panel, live) {
     const isRev = ['plate', 'hall', 'room'].includes(st.type), isDelay = st.type === 'delay';
@@ -717,35 +881,7 @@
     if (taps.length >= 3) { const iv = (taps[taps.length - 1] - taps[0]) / (taps.length - 1); const bpm = Math.round(60000 / iv); setParam(['tempo'], bpm); toast('Tempo ' + bpm + ' BPM'); }
   }
 
-  function insertsPanel(t, kind, st, panel) {
-    const insBox = h('div', { class: 'ins' });
-    const paramBox = h('div', { class: 'params' });
-    const target = kind === 'master' ? 'master' : kind === 'bus' ? 'bus:' + st.id : String(t);
-    (st.inserts || []).forEach((spec, i) => {
-      insBox.append(h('div', { class: 'item' + (spec.failed ? ' failed' : '') },
-        h('span', { class: 'n', title: spec.path, onclick: () => showParams(i) }, spec.name),
-        h('button', { class: 'tog g' + (spec.bypass ? '' : ' on'), title: 'Bypass', onclick: () => api('insert-bypass', { target, idx: i, v: !spec.bypass }) }, spec.bypass ? 'OFF' : 'ON'),
-        h('button', { class: 'tog', title: 'Edit', onclick: () => showParams(i) }, '⚙'),
-        h('button', { class: 'tog m', title: 'Remove', onclick: () => api('insert-remove', { target, idx: i }) }, '✕')));
-    });
-    async function showParams(i) {
-      paramBox.innerHTML = 'Loading…';
-      const ps = await tryApi('insert-params', undefined, `?target=${encodeURIComponent(target)}&idx=${i}`);
-      paramBox.innerHTML = '';
-      if (!ps.length) paramBox.append(h('p', { class: 'hint' }, 'This plug-in exposes no parameters.'));
-      for (const p of ps) {
-        const rng = h('input', { type: 'range', min: 0, max: 1, step: 0.001, value: p.value });
-        const tv = h('span', { class: 'pv' }, p.text + (p.label ? ' ' + p.label : ''));
-        rng.oninput = () => api('insert-param', { target, idx: i, key: p.key, v: +rng.value });
-        rng.onchange = async () => { const fresh = await api('insert-params', undefined, `?target=${encodeURIComponent(target)}&idx=${i}`); const q = fresh.find(x => x.key === p.key); if (q) tv.textContent = q.text + (q.label ? ' ' + q.label : ''); };
-        paramBox.append(h('label', {}, h('span', {}, p.name), rng, tv));
-      }
-    }
-    return panel('Inserts (VST3 / AU plug-ins)', 'inserts', null, insBox,
-      h('button', { class: 'btn', style: 'margin-top:6px', onclick: () => pickPlugin(target) }, icon('plus', 14), 'Add plug-in'), paramBox);
-  }
-
-  const closeEd = () => { $('#editor').hidden = true; edTarget = null; edLive = null; send({ t: 'focus', ch: null }); };
+  const closeEd = () => { $('#editor').hidden = true; edTarget = null; edLive = null; send({ t: 'focus', ch: null, target: null }); };
   $('#edClose').onclick = closeEd;
   const stepEd = d => {
     if (typeof edTarget === 'number') { const o = S.mixer.order, i = o.indexOf(edTarget); openEditor(o[(i + d + o.length) % o.length]); }
@@ -754,38 +890,37 @@
   };
   $('#edPrev').onclick = () => stepEd(-1);
   $('#edNext').onclick = () => stepEd(1);
-  const COPYABLE = ['hpf', 'lpf', 'eq', 'comp', 'gate', 'deess', 'dyneq', 'trans', 'sat', 'tune', 'sends', 'trim', 'mbc', 'limiter', 'chain', 'width'];
+  const COPYABLE = ['chain', 'sends', 'trim', 'phase', 'duck'];
   $('#edCopy').onclick = () => { clipboard = JSON.parse(JSON.stringify(objOf(edTarget))); toast('Copied ' + clipboard.name + ' settings'); };
   $('#edPaste').onclick = () => {
     if (!clipboard) return toast('Copy a strip first', true);
     const base = pathOf(edTarget), cur = objOf(edTarget);
-    for (const k of COPYABLE) if (clipboard[k] !== undefined && cur[k] !== undefined) setParam([...base, k], JSON.parse(JSON.stringify(clipboard[k])));
+    for (const k of COPYABLE) if (clipboard[k] !== undefined && cur[k] !== undefined) setParam([...base, k], k === 'chain' ? freshChain(clipboard.chain) : JSON.parse(JSON.stringify(clipboard[k])));
     openEditor(edTarget); toast('Pasted');
   };
   $('#edReset').onclick = () => {
-    if (!confirm('Turn off all processing on this strip?')) return;
+    if (!confirm('Clear this strip’s processing chain back to a flat EQ?')) return;
     const base = pathOf(edTarget), s = objOf(edTarget);
-    for (const k of ['hpf', 'lpf', 'comp', 'gate', 'deess', 'dyneq', 'trans', 'sat', 'mbc']) if (s[k]) setParam([...base, k], { ...s[k], on: false });
-    if (s.eq) setParam([...base, 'eq'], { on: true, bands: s.eq.bands.map(b => ({ ...b, gain: 0 })) });
+    setParam([...base, 'chain'], [makeModule('eq')]);
     if (s.trim !== undefined) setParam([...base, 'trim'], 0);
     openEditor(edTarget);
   };
 
-  async function pickPlugin(target) {
+  async function pickPlugin(chainPath) {
     modal(async (card, close) => {
       const list = h('div', { class: 'list', style: 'max-height:50vh' });
       const q = h('input', { placeholder: 'Search plug-ins…', style: 'width:100%' });
-      card.append(h('h3', {}, 'Add plug-in'), h('p', { class: 'hint' }, 'Your installed VST3' + (navigator.platform.includes('Mac') ? ' and Audio Unit' : '') + ' plug-ins. Their settings appear here as sliders.'), q, list, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel')));
+      card.append(h('h3', {}, 'Add a plug-in to the chain'), h('p', { class: 'hint' }, 'Your installed VST3' + (navigator.platform.includes('Mac') ? ' and Audio Unit' : '') + ' plug-ins. It goes at the end of the chain; drag it where you want it.'), q, list, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel')));
       list.append('Scanning…');
       const ps = await api('plugins');
       const render = () => {
         list.innerHTML = '';
         const f = ps.filter(p => p.name.toLowerCase().includes(q.value.toLowerCase()));
         if (!f.length) list.append(h('p', { class: 'hint' }, 'No plug-ins found in the standard folders.'));
-        for (const p of f) list.append(h('div', { class: 'li', onclick: async () => {
-          list.innerHTML = 'Loading ' + p.name + '…';
-          try { await api('insert-add', { target, path: p.path }); toast('Added ' + p.name); } catch (e) { toast(p.name + ': ' + e.message, true); }
-          close();
+        for (const p of f) list.append(h('div', { class: 'li', onclick: () => {
+          const cur = getPath(S.mixer, chainPath) || [];
+          setParam(chainPath, [...cur, makeModule('plugin', { path: p.path, name: p.name, params: {} })]);
+          toast('Added ' + p.name); close(); setTimeout(() => edTarget != null && openEditor(edTarget), 400);
         } }, p.name, h('span', {}, p.kind)));
       };
       q.oninput = render; render();

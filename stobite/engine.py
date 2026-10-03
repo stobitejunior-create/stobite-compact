@@ -87,14 +87,14 @@ def monitor_mix(x, mode):
 
 AUTOMATABLE = {
     ("channels", "sends"), ("buses", "fader"), ("buses", "mute"), ("buses", "sends"), ("buses", "duck"),
-    ("fx", "ret"), ("fx", "mute"), ("fx", "duck"), ("master", "width"), ("ins",),
+    ("fx", "ret"), ("fx", "mute"), ("fx", "duck"), ("channels", "chain"), ("buses", "chain"),
 }
 
 
 def automatable(path):
-    if path[0] == "ins":
-        return True
-    return len(path) >= 3 and (path[0], path[2]) in AUTOMATABLE or (len(path) == 2 and path == ["master", "width"])
+    if path[0] == "master":
+        return len(path) >= 3 and path[1] == "chain"
+    return len(path) >= 3 and (path[0], path[2]) in AUTOMATABLE
 
 
 def auto_target(path):
@@ -106,9 +106,6 @@ def auto_target(path):
         return f"bus:{path[1]}"
     if p0 == "fx":
         return f"fx:{path[1]}"
-    if p0 == "ins":
-        t = str(path[1])
-        return "master" if t == "master" else (t if not t.startswith("bus:") else t)
     return "master"
 
 
@@ -455,11 +452,6 @@ class Engine:
 
     def apply_auto_path(self, path, v):
         path = [int(p) if p.lstrip("-").isdigit() else p for p in path]
-        if path[0] == "ins":  # ins/<target>/<idx>/<param key>
-            lst, _ = self._ins_target(str(path[1]))
-            lst[int(path[2])].set_raw(str(path[3]), v)
-            self.auto_values["/".join(map(str, path))] = v
-            return
         if path[-1] == "mute":
             v = v >= 0.5
         self.mixer.set(path, v)
@@ -593,71 +585,11 @@ class Engine:
 
     # ------------------------------------------------------------- plugins
     def restore_inserts(self):
-        st = self.mixer.state
-        for c, ch in enumerate(st["channels"]):
-            self.mixer.inserts[c] = self._load_list(ch.get("inserts", []))
-        self.mixer.minserts = self._load_list(st["master"].get("inserts", []))
-        for b in st.get("buses", []):
-            self.mixer.binserts[b["id"]] = self._load_list(b.get("inserts", []))
+        """Plug-ins now live in each processing chain and are loaded by the mixer itself."""
 
-    def _load_list(self, lst):
-        out = []
-        for spec in lst:
-            try:
-                ins = Insert(spec["path"])
-                for k, v in spec.get("params", {}).items():
-                    ins.set_raw(k, v)
-                ins.bypass = spec.get("bypass", False)
-                out.append(ins)
-            except Exception:
-                traceback.print_exc()
-        return out
-
-    def _ins_target(self, target):
-        if target == "master":
-            return self.mixer.minserts, self.mixer.state["master"]
-        if str(target).startswith("bus:"):
-            bid = target[4:]
-            st = next(b for b in self.mixer.state["buses"] if b["id"] == bid)
-            return self.mixer.binserts.setdefault(bid, []), st
-        c = int(target)
-        return self.mixer.inserts[c], self.mixer.state["channels"][c]
-
-    def add_insert(self, target, path):
-        ins = Insert(path)
-        lst, st = self._ins_target(target)
-        st.setdefault("inserts", []).append({"path": path, "name": ins.name, "params": {}, "bypass": False})
-        if target == "master":
-            self.mixer.minserts = lst + [ins]
-        elif str(target).startswith("bus:"):
-            self.mixer.binserts[target[4:]] = lst + [ins]
-        else:
-            self.mixer.inserts[int(target)] = lst + [ins]
-        self.dirty = True
-
-    def remove_insert(self, target, idx):
-        lst, st = self._ins_target(target)
-        lst = [p for i, p in enumerate(lst) if i != idx]
-        del st["inserts"][idx]
-        if target == "master":
-            self.mixer.minserts = lst
-        elif str(target).startswith("bus:"):
-            self.mixer.binserts[target[4:]] = lst
-        else:
-            self.mixer.inserts[int(target)] = lst
-        self.dirty = True
-
-    def insert_param(self, target, idx, key, value):
-        lst, st = self._ins_target(target)
-        lst[idx].set_raw(key, value)
-        st["inserts"][idx]["params"][key] = float(value)
-        self.dirty = True
-
-    def insert_bypass(self, target, idx, value):
-        lst, st = self._ins_target(target)
-        lst[idx].bypass = bool(value)
-        st["inserts"][idx]["bypass"] = bool(value)
-        self.dirty = True
+    def plugin_params(self, mid):
+        inst = self.mixer.plugins.get(mid)
+        return inst.params() if inst is not None else []
 
     # ------------------------------------------------------------- export
     def export(self, kind="mix", fmt="wav", start=None, end=None, target=None):
@@ -706,9 +638,6 @@ class Engine:
                     st["master"]["fader"] = min(st["master"]["fader"] + extra_db, 24.0)
                     st["master"]["mute"] = False
                     m = Mixer(s.nch, s.sr, st)
-                    m.inserts = [self._load_list(ch.get("inserts", [])) for ch in m.state["channels"]]
-                    m.minserts = self._load_list(m.state["master"].get("inserts", []))
-                    m.binserts = {b["id"]: self._load_list(b.get("inserts", [])) for b in m.state["buses"]}
                     return m
                 tail = 2 * s.sr
                 passes = 2 if target is not None else 1
@@ -716,7 +645,7 @@ class Engine:
                 if target is not None:
                     # pass 1: measure integrated loudness of the mix as it stands
                     mix = make_mix()
-                    mix.limiter.on = False
+                    mix.set_master_limiters(False)
                     pos = start
                     while pos < end:
                         n = min(block, end - pos)
@@ -730,8 +659,6 @@ class Engine:
                     job["measured"] = round(measured, 1)
                     job["gain"] = round(gain, 1)
                 mix = make_mix(gain)
-                if target is not None:
-                    mix.limiter.on = True
                 # fresh plugin instances so the live engine's copies aren't shared across threads
                 ext = "mp3" if fmt == "mp3" else "wav"
                 path = os.path.join(outdir, f"{s.name} mix {stamp}.{ext}")

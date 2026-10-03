@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 import time
 import traceback
 
@@ -17,6 +18,7 @@ from aiohttp import web, WSMsgType
 from .engine import Engine, list_devices
 from .session import home_dir, safe_name
 from . import wing as wingmod
+from . import portable
 
 PORT = int(os.environ.get("STOBITE_PORT", "8730"))
 
@@ -57,6 +59,7 @@ class App:
         self.loop = None
         self.wing = wingmod.WingBridge(on_update=self._wing_update)
         self.want_spectrum = False
+        self.runner = self.site = None
         self.mix_undo, self.mix_redo, self.mix_ck, self.auto_push = [], [], 0.0, 0.0
         self.engine.listeners.append(self._engine_event)
 
@@ -95,17 +98,33 @@ class App:
 
     def mixer_public(self):
         st = self.engine.mixer.snapshot()
-        for c, ch in enumerate(st["channels"]):
-            for i, spec in enumerate(ch.get("inserts", [])):
-                lst = self.engine.mixer.inserts[c]
-                spec["failed"] = lst[i].failed if i < len(lst) else True
+        plugins = self.engine.mixer.plugins
+        for owner in [*st["channels"], *st["buses"], st["master"]]:
+            for m in owner.get("chain") or []:
+                if m.get("type") == "plugin":
+                    inst = plugins.get(m["id"])
+                    m["failed"] = inst is None or bool(getattr(inst, "failed", False))
         return st
+
+    async def set_remote(self, on):
+        """Phone remote on = listen on the network; off = only this computer can connect."""
+        if self.runner is None:
+            return
+        host = "0.0.0.0" if on else "127.0.0.1"
+        if self.site is not None and getattr(self, "host", None) == host:
+            return
+        if self.site is not None:
+            await self.site.stop()
+        self.site = web.TCPSite(self.runner, host, PORT)
+        await self.site.start()
+        self.host = host
 
     def info(self):
         i = self.engine.info()
+        i["remote"] = bool(self.engine.cfg.get("remote", False))
         cb = self.engine.cables
         i["cables"] = {"status": cb.status, "error": cb.error, "names": cb.names}
-        i["urls"] = [f"http://{ip}:{PORT}" for ip in lan_ips()]
+        i["urls"] = [f"http://{ip}:{PORT}" for ip in lan_ips()] if i["remote"] else []
         i["wing"] = {"ip": self.wing.ip, "connected": self.wing.connected}
         return i
 
@@ -200,13 +219,6 @@ class App:
                 return
             dst.append(e.mixer.snapshot())
             st = src.pop()
-            # keep the live plug-in instances; only their settings snapshot is restored
-            for c, ch in enumerate(st["channels"]):
-                ch["inserts"] = e.mixer.state["channels"][c].get("inserts", [])
-            st["master"]["inserts"] = e.mixer.state["master"].get("inserts", [])
-            cur_bus = {b["id"]: b.get("inserts", []) for b in e.mixer.state["buses"]}
-            for b in st.get("buses", []):
-                b["inserts"] = cur_bus.get(b["id"], [])
             e.mixer.apply_state(st)
             e.dirty = True
             self.mix_ck = 0
@@ -214,6 +226,7 @@ class App:
             await ws.send_str(json.dumps({"t": "toast", "msg": "Mixer " + ("undo" if t == "mixundo" else "redo")}))
         elif t == "focus":
             e.mixer.focus = m.get("ch") if isinstance(m.get("ch"), int) else None
+            e.mixer.focus_target = m.get("target") or None
         elif t == "transport":
             a = m["a"]
             if a == "play":
@@ -263,6 +276,9 @@ class App:
             if name == "config":
                 restart = any(k in body for k in ("input", "output", "sr", "block"))
                 restart_cables = any(k in body for k in ("cable_out", "cable_in"))
+                if "remote" in body:
+                    e.cfg["remote"] = bool(body["remote"])
+                    await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing"):
                     if k in body:
@@ -306,25 +322,95 @@ class App:
                                       "kind": "AU" if p.endswith(".component") else "VST3"})
                 found.sort(key=lambda p: p["name"].lower())
                 return web.json_response(found)
-            if name == "insert-add":
-                await asyncio.get_running_loop().run_in_executor(None, e.add_insert, body["target"], body["path"])
+            # ---- settings files (channel / whole mix) and projects
+            if name == "settings-library":
+                return web.json_response(portable.list_library())
+            if name == "channel-save":
+                c = int(body["ch"])
+                path, data = portable.save_channel(e.mixer.state["channels"][c], body.get("name"))
+                return web.json_response({"path": path, "data": data})
+            if name == "channel-read":
+                return web.json_response(portable.read_channel(q["name"]))
+            if name == "channel-delete":
+                portable.delete_channel(body["name"])
+                return web.json_response({"ok": True})
+            if name == "mix-save":
+                folder, n = portable.save_mix(e.mixer.snapshot(), body.get("name") or (e.session.name + " mix"))
+                return web.json_response({"folder": folder, "channels": n})
+            if name == "mix-read":
+                return web.json_response(portable.read_mix(q["name"]))
+            if name == "settings-upload":
+                reader = await request.multipart()
+                out = []
+                async for part in reader:
+                    if part.filename:
+                        raw = await part.read(decode=False)
+                        try:
+                            out.append(portable.store_upload(part.filename, raw))
+                        except Exception as ex:
+                            raise RuntimeError(f"{part.filename}: not a Stobite settings file ({ex})")
+                chans = [d for d in out if d.get("kind") == "stobite-channel"]
+                glob_ = next((d for d in out if d.get("kind") == "stobite-mix"), None)
+                return web.json_response({"channels": chans, "globals": glob_})
+            if name == "settings-apply":
+                st = e.mixer.snapshot()
+                opts = body.get("opts") or {}
+                for a in body.get("assign") or []:
+                    c = int(a["ch"])
+                    if 0 <= c < len(st["channels"]):
+                        portable.apply_channel(st["channels"][c], a["data"], opts)
+                g = body.get("globals")
+                if g:
+                    for k in ("buses", "fx", "master", "tempo", "song", "cables"):
+                        if g.get(k) is not None:
+                            st[k] = g[k]
+                e.mixer.apply_state(st)
+                e.dirty = True
                 await self._push("mixer")
                 return web.json_response({"ok": True})
-            if name == "insert-remove":
-                e.remove_insert(body["target"], int(body["idx"]))
+            if name == "project-export":
+                if e.export_job and e.export_job.get("running"):
+                    raise RuntimeError("An export is already running")
+                job = {"running": True, "progress": 0.0, "kind": "project", "file": None, "error": None}
+                e.export_job = job
+
+                def run_export():
+                    try:
+                        job["file"] = portable.export_project(e.session, e.mixer.snapshot(), lambda f: job.__setitem__("progress", f))
+                    except Exception as ex:
+                        traceback.print_exc()
+                        job["error"] = str(ex)
+                    job["running"] = False
+                    job["progress"] = 1.0
+                    e.emit("export")
+                threading.Thread(target=run_export, daemon=True).start()
+                return web.json_response(job)
+            if name == "project-import":
+                reader = await request.multipart()
+                tmp = None
+                async for part in reader:
+                    if part.filename:
+                        tmp = portable.temp_path(".stobite")
+                        with open(tmp, "wb") as f:
+                            while chunk := await part.read_chunk(1 << 20):
+                                f.write(chunk)
+                if not tmp:
+                    raise RuntimeError("No project file received")
+                try:
+                    sname = await asyncio.get_running_loop().run_in_executor(None, portable.import_project, tmp)
+                finally:
+                    os.remove(tmp)
+                e.open_session(sname)
                 await self._push("mixer")
-                return web.json_response({"ok": True})
-            if name == "insert-params":
-                lst, _ = e._ins_target(q["target"])
-                return web.json_response(lst[int(q["idx"])].params())
-            if name == "insert-param":
-                e.insert_param(body["target"], int(body["idx"]), body["key"], body["v"])
-                if e.touch(["ins", str(body["target"]), int(body["idx"]), body["key"]], body["v"]):
+                return web.json_response({"name": sname})
+            if name == "plugin-params":
+                return web.json_response(e.plugin_params(q["mid"]))
+            if name == "plugin-param":
+                path = body["path"] + ["params", body["key"]]
+                e.mixer.set(path, float(body["v"]))
+                e.dirty = True
+                if e.touch(path, body["v"]):
                     await self.broadcast({"t": "session", "session": e.session.public()})
-                return web.json_response({"ok": True})
-            if name == "insert-bypass":
-                e.insert_bypass(body["target"], int(body["idx"]), body["v"])
-                await self._push("mixer")
                 return web.json_response({"ok": True})
             if name == "scenes":
                 d = os.path.join(home_dir(), "Scenes")
@@ -347,7 +433,6 @@ class App:
                 scope = body.get("scope")  # None = everything
                 if scope is None:
                     e.mixer.replace_state(st)
-                    e.restore_inserts()
                 else:
                     e.mixer.apply_state(merge_scene(e.mixer.snapshot(), st, scope, set(body.get("safe", []))))
                 e.dirty = True
@@ -356,8 +441,6 @@ class App:
             if name == "mixer-reset":
                 from .mixer import default_state
                 e.mixer.replace_state(default_state(e.nch))
-                e.mixer.inserts = [[] for _ in range(e.nch)]
-                e.mixer.minserts = []
                 e.dirty = True
                 await self._push("mixer")
                 return web.json_response({"ok": True})
@@ -438,7 +521,10 @@ class App:
                 return web.FileResponse(path, headers={
                     "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'})
             if name == "reveal":
-                path = e.export_job["file"] if (q.get("what") == "export" and e.export_job) else e.session.dir
+                what = q.get("what")
+                path = (e.export_job["file"] if (what == "export" and e.export_job) else
+                        portable.presets_dir() if what == "presets" else
+                        os.path.join(portable.presets_dir("Mixes"), q.get("name", "")) if what == "mix" else e.session.dir)
                 if request.remote in ("127.0.0.1", "::1") and path:
                     if sys.platform == "darwin":
                         os.system(f'open -R "{path}"')
@@ -481,9 +567,7 @@ button{background:#f76b15;border:0;color:#000;font-weight:600}</style>
 SCENE_SCOPES = {
     "faders": {"channels": ["fader", "pan"], "buses": ["fader", "balance", "width"], "fx": ["ret"], "master": ["fader"]},
     "mutes": {"channels": ["mute", "solo"], "buses": ["mute"], "fx": ["mute"], "master": ["mute"]},
-    "eq": {"channels": ["hpf", "lpf", "eq"], "buses": ["hpf", "lpf", "eq"], "master": ["hpf", "lpf", "eq"]},
-    "dynamics": {"channels": ["gate", "comp", "deess", "dyneq", "trans", "sat"],
-                 "buses": ["comp", "sat", "dyneq", "mbc", "limiter", "duck"], "master": ["comp", "sat", "dyneq", "mbc", "limiter", "width"]},
+    "processing": {"channels": ["chain", "trim", "phase"], "buses": ["chain", "duck"], "master": ["chain"]},
     "sends": {"channels": ["sends"], "buses": ["sends"]},
     "fx": {"fx": ["type", "params", "duck", "name"]},
     "routing": {"channels": ["out", "input"], "buses": ["out"], "fx": ["out"]},
@@ -492,6 +576,9 @@ SCENE_SCOPES = {
 
 def merge_scene(cur, scene, scope, safe):
     """Recall only the chosen parts of a scene, leaving everything else (and safe channels) alone."""
+    from .mixer import migrate
+    scene = migrate(scene, len(cur["channels"]))
+    scope = {"processing" if s in ("eq", "dynamics") else s for s in scope}
     out = cur
     for cat in scope:
         for section, keys in SCENE_SCOPES.get(cat, {}).items():

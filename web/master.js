@@ -51,33 +51,33 @@
     const eqThumb = h('canvas');
     els.eqThumb = eqThumb;
     els.gr = h('i'); els.lim = h('i');
-    const chain = h('div', { class: 'chain' },
-      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '1'), 'Tone EQ', T(['master', 'eq', 'on'], 'ON')),
-        h('div', { class: 'eqthumb big', onclick: () => openEditor('master') }, eqThumb), h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Open master chain')),
-      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '2'), 'Glue compressor', T(['master', 'comp', 'on'], 'ON')),
-        h('div', { class: 'knobs' }, K(['master', 'comp', 'thr'], { label: 'Threshold', min: -40, max: 0, def: -12, format: fmt.db, size: 40, big: true }),
-          K(['master', 'comp', 'ratio'], { label: 'Ratio', min: 1, max: 10, log: true, def: 2, format: fmt.ratio, size: 40, big: true }),
-          K(['master', 'comp', 'att'], { label: 'Attack', min: 1, max: 100, log: true, def: 30, format: fmt.ms, size: 32 }),
-          K(['master', 'comp', 'rel'], { label: 'Release', min: 50, max: 1500, log: true, def: 200, format: fmt.ms, size: 32 }),
-          K(['master', 'comp', 'makeup'], { label: 'Makeup', min: 0, max: 12, def: 0, format: fmt.db, size: 32 })),
-        h('div', { class: 'grbar', title: 'Gain reduction' }, els.gr)),
-      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '3'), 'Colour & width', T(['master', 'sat', 'on'], 'SAT')),
-        h('div', { class: 'knobs' }, K(['master', 'sat', 'drive'], { label: 'Saturation', min: 0, max: 12, def: 1.5, format: v => '+' + v.toFixed(1) + 'dB', size: 40, big: true, color: '#ffb366' }),
-          K(['master', 'width'], { label: 'Width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 40, big: true, color: '#3aa0ff' }),
-          K(['master', 'balance'], { label: 'Balance', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 32 })),
-        h('div', { class: 'frow' }, T(['master', 'mbc', 'on'], 'Multiband'), T(['master', 'dyneq', 'on'], 'Dynamic EQ'))),
-      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '4'), 'Limiter', T(['master', 'limiter', 'on'], 'ON')),
-        h('div', { class: 'knobs' }, K(['master', 'limiter', 'threshold'], { label: 'Threshold', min: -12, max: 0, def: 0, format: fmt.db, size: 40, big: true }),
-          K(['master', 'limiter', 'ceiling'], { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 40, big: true }),
-          K(['master', 'fader'], { label: 'Output', min: -30, max: 12, def: 0, format: fmt.db, size: 32 })),
-        h('div', { class: 'frow' }, T(['master', 'limiter', 'truepeak'], 'True peak')),
-        h('div', { class: 'grbar', title: 'Limiter gain reduction' }, els.lim)),
-    );
+    // the master chain, in its real order; each stage shows its main controls
+    const MP = (k, ...p) => ['master', 'chain', k, ...p];
+    const stage = (m, k) => {
+      const info = CATALOG?.moduleTypes?.[m.type] || { label: m.type };
+      const kids = [];
+      if (m.type === 'eq') kids.push(h('div', { class: 'eqthumb big', onclick: () => openEditor('master') }, eqThumb));
+      else if (m.type === 'comp') { kids.push(h('div', { class: 'knobs' }, K(MP(k, 'thr'), { label: 'Threshold', min: -40, max: 0, def: -12, format: fmt.db, size: 38, big: true }),
+        K(MP(k, 'ratio'), { label: 'Ratio', min: 1, max: 10, log: true, def: 2, format: fmt.ratio, size: 38, big: true }),
+        K(MP(k, 'makeup'), { label: 'Makeup', min: 0, max: 12, def: 0, format: fmt.db, size: 30 })), h('div', { class: 'grbar', title: 'Gain reduction' }, els.gr)); }
+      else if (m.type === 'sat') kids.push(h('div', { class: 'knobs' }, K(MP(k, 'drive'), { label: 'Drive', min: 0, max: 12, def: 1.5, format: v => '+' + v.toFixed(1) + 'dB', size: 38, big: true, color: '#ffb366' }),
+        K(MP(k, 'mix'), { label: 'Mix', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 30, color: '#ffb366' })));
+      else if (m.type === 'width') kids.push(h('div', { class: 'knobs' }, K(MP(k, 'width'), { label: 'Width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#3aa0ff' }),
+        K(MP(k, 'balance'), { label: 'Balance', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 30 })));
+      else if (m.type === 'limiter') { kids.push(h('div', { class: 'knobs' }, K(MP(k, 'threshold'), { label: 'Threshold', min: -12, max: 0, def: 0, format: fmt.db, size: 38, big: true }),
+        K(MP(k, 'ceiling'), { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 38, big: true })),
+        h('div', { class: 'frow' }, T(MP(k, 'truepeak'), 'True peak')), h('div', { class: 'grbar', title: 'Limiter gain reduction' }, els.lim)); }
+      else kids.push(h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Open settings'));
+      return h('div', { class: 'stage' + (m.on === false ? ' off' : '') }, h('div', { class: 'stage-h' }, h('b', {}, String(k + 1)), m.type === 'plugin' ? m.name : info.label, T(MP(k, 'on'), 'ON')), ...kids);
+    };
+    const chain = h('div', { class: 'chain' }, ...(M().chain || []).map(stage),
+      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '→'), 'Output'), h('div', { class: 'knobs' }, K(['master', 'fader'], { label: 'Output', min: -30, max: 12, def: 0, format: fmt.db, size: 38, big: true })),
+        h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Reorder / add…')));
     box.append(h('div', { class: 'card chain-card' }, h('div', { class: 'card-head' }, h('h3', {}, 'Mastering chain'), h('span', { class: 'grow' }),
       h('button', { class: 'btn', onclick: autoMaster, title: 'Sets gentle glue, ceiling and output gain toward the target from what is playing now' }, '✦ Auto-level to target'),
       h('button', { class: 'btn accent', onclick: () => openExport(undefined, undefined, M().target) }, 'Export mastered mix…')), chain));
     built = true;
-    requestAnimationFrame(() => { sizeCanvases(); drawEqCurve(eqThumb, M(), S.info?.sr || 48000); mL.size(); mR.size(); });
+    requestAnimationFrame(() => { sizeCanvases(); drawEqCurve(eqThumb, chainEqView(M()), S.info?.sr || 48000); mL.size(); mR.size(); });
   }
 
   function autoMaster() {
@@ -85,8 +85,12 @@
     if (st.length < 30) return toast('Play some of the mix first (at least 3 seconds) so I can measure it', true);
     const avg = st.reduce((a, b) => a + b, 0) / st.length;
     const need = M().target - avg;
-    if (!M().comp.on) { setParam(['master', 'comp'], { ...M().comp, on: true, thr: -14, ratio: 2, att: 30, rel: 200, knee: 6, makeup: 0 }); }
-    setParam(['master', 'limiter'], { ...M().limiter, on: true, ceiling: -1, truepeak: true });
+    const ch = [...(M().chain || [])];
+    const ci = ch.findIndex(x => x.type === 'comp');
+    if (ci < 0) ch.splice(1, 0, makeModule('comp', { thr: -14, ratio: 2, att: 30, rel: 200 })); else ch[ci] = { ...ch[ci], on: true };
+    const li = ch.findIndex(x => x.type === 'limiter');
+    if (li < 0) ch.push(makeModule('limiter', { ceiling: -1, truepeak: true })); else ch[li] = { ...ch[li], on: true, ceiling: -1, truepeak: true };
+    setParam(['master', 'chain'], ch);
     const out = clamp(Math.round((M().fader + need) * 10) / 10, -30, 12);
     setParam(['master', 'fader'], out);
     build();
@@ -112,7 +116,7 @@
     g.fillStyle = '#e8e9eb';
     for (let i = 0; i < n; i++) g.fillRect(i * bw + 1, yOf(specHold[i]) - 1, bw - 2, 2);
     // master EQ curve overlay
-    const secs = stripSections(M(), S.info?.sr || 48000);
+    const secs = stripSections(chainEqView(M()), S.info?.sr || 48000);
     if (secs.length) {
       g.beginPath();
       for (let x = 0; x <= W; x += 3) { const f = 20 * Math.pow(1000, x / W); const y = H * 0.35 - responseDb(secs, f, S.info?.sr || 48000) * 3; x ? g.lineTo(x, y) : g.moveTo(x, y); }
@@ -185,8 +189,8 @@
   on('set', path => {
     if (path[0] !== 'master' || S.view !== 'master') return;
     const c = ctl.get(path.join('/')); if (c) c.set(getPath(S.mixer, path));
-    if (['eq', 'hpf', 'lpf'].includes(path[1]) && els.eqThumb) drawEqCurve(els.eqThumb, M(), S.info?.sr || 48000);
-    if (path.length === 2 && ['comp', 'limiter'].includes(path[1])) build();
+    if (path[1] === 'chain' && els.eqThumb) drawEqCurve(els.eqThumb, chainEqView(M()), S.info?.sr || 48000);
+    if (path.length === 2 && path[1] === 'chain') build();
   });
   window.addEventListener('resize', () => { if (S.view === 'master') { sizeCanvases(); paintHist(); } });
 })();

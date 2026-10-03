@@ -221,7 +221,13 @@ function biquadMag(c, f, fs) {
 }
 const BW_QS = { 12: [0.7071], 24: [0.5412, 1.3066], 48: [0.5098, 0.6013, 0.9, 2.5629] };
 const cutSecs = (kind, f, slope, fs) => (BW_QS[slope] || BW_QS[24]).map(q => biquad(kind, f, 0, q, fs));
+// a strip's whole chain drawn as one curve: every EQ module that is switched on
+function chainEqView(obj) { return { chain: (obj && obj.chain) || [] }; }
 function stripSections(s, fs) {
+  if (s && s.chain) {
+    return s.chain.filter(m => m.type === 'eq' && m.on !== false)
+      .flatMap(m => stripSections({ hpf: m.hpf, lpf: m.lpf, eq: { on: true, bands: m.bands } }, fs));
+  }
   const out = [];
   if (s.hpf && s.hpf.on) out.push(...cutSecs('hp', s.hpf.freq, s.hpf.slope || 24, fs));
   if (s.lpf && s.lpf.on) out.push(...cutSecs('lp', s.lpf.freq, s.lpf.slope || 12, fs));
@@ -261,7 +267,7 @@ function drawEqCurve(canvas, strip, fs, opts = {}) {
     g.fillStyle = gr; g.fill();
   }
   const secs = stripSections(strip, fs);
-  const on = strip.eq?.on !== false || strip.hpf?.on || strip.lpf?.on;
+  const on = strip.chain ? strip.chain.some(m => m.type === 'eq' && m.on !== false) : (strip.eq?.on !== false || strip.hpf?.on || strip.lpf?.on);
   g.beginPath();
   for (let x = 0; x <= W; x += 2) { const f = 20 * Math.pow(1000, x / W); const y = gy(clamp(responseDb(secs, f, fs), -range * 1.5, range * 1.5)); x ? g.lineTo(x, y) : g.moveTo(x, y); }
   g.strokeStyle = on ? (opts.color || '#f76b15') : '#555'; g.lineWidth = opts.grid ? 2 : 1.4; g.stroke();
