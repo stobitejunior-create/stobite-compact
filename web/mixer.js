@@ -109,7 +109,7 @@
     const thumb = h('canvas');
     const badges = h('div', { class: 'badges' },
       badge('HPF', P('hpf', 'on'), 'Low cut'), badge('GATE', P('gate', 'on')), badge('EQ', P('eq', 'on')), badge('COMP', P('comp', 'on')),
-      badge('DS', P('deess', 'on'), 'De-esser'), badge('DYN', P('dyneq', 'on'), 'Dynamic EQ'), badge('TR', P('trans', 'on'), 'Transient shaper'), badge('SAT', P('sat', 'on'), 'Saturation'));
+      badge('DS', P('deess', 'on'), 'De-esser'), badge('DYN', P('dyneq', 'on'), 'Dynamic EQ'), badge('TR', P('trans', 'on'), 'Transient shaper'), badge('SAT', P('sat', 'on'), 'Saturation'), badge('TUNE', P('tune', 'on'), 'Auto-tune (pitch correction)'));
     const gr = h('i');
     const sends = h('div', { class: 'sends' }, ...S.mixer.fx.map((f, i) => bind(P('sends', i), Knob({ label: f.name.split(' ').pop().slice(0, 6), min: -90, max: 10, value: ch.sends[i], def: -90, size: 26, format: fmt.db, color: '#3aa0ff', onChange: v => setParam(P('sends', i), v) })).el));
     const pan = bind(P('pan'), Knob({ label: 'Pan', min: -1, max: 1, value: ch.pan, def: 0, size: 28, format: fmt.pan, bipolar: true, onChange: v => setParam(P('pan'), v) }));
@@ -516,6 +516,24 @@
           K(P('deess', 'thr'), { label: 'Threshold', min: -60, max: 0, def: -28, format: fmt.db, size: 36, big: true }),
           K(P('deess', 'range'), { label: 'Max cut', min: 1, max: 20, def: 8, format: v => '-' + v.toFixed(0) + 'dB', size: 30 })),
         h('div', { class: 'grbar' }, live.dsBar), live.dsTxt));
+      const KEYS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+      live.tuneNote = h('div', { class: 'tune-note' }, '—');
+      live.tuneNeedle = h('i');
+      live.tuneTxt = h('div', { class: 'hint' }, 'Sing or play to see the pitch');
+      body.append(panel('Auto-tune (pitch correction)', 'tune', P('tune', 'on'),
+        h('div', { class: 'tune-read' }, live.tuneNote, h('div', { class: 'tune-meter', title: 'How far off the singer is: centre = in tune' }, h('b'), live.tuneNeedle), live.tuneTxt),
+        h('div', { class: 'f2' }, h('span', {}, 'Song key'), h('div', { class: 'frow' },
+          S_(['song', 'key'], KEYS.map(k => [k, k])), S_(['song', 'scale'], [['major', 'Major'], ['minor', 'Minor'], ['harmonic minor', 'Harmonic minor'], ['pentatonic', 'Pentatonic']]))),
+        h('div', { class: 'f2' }, h('span', {}, 'Notes'), S_(P('tune', 'scale'), [['song', 'Song key (recommended)'], ['chromatic', 'Any note (chromatic)']])),
+        h('div', { class: 'f2' }, h('span', {}, 'Voice'), S_(P('tune', 'voice'), [['any', 'Any'], ['soprano', 'Soprano'], ['alto', 'Alto'], ['tenor', 'Tenor'], ['baritone', 'Baritone / bass']])),
+        h('div', { class: 'knobs' },
+          K(P('tune', 'speed'), { label: 'Retune speed', min: 0, max: 400, def: 40, format: v => v < 1 ? 'Robot' : Math.round(v) + 'ms', size: 38, big: true, color: '#b18cff' }),
+          K(P('tune', 'amount'), { label: 'Amount', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#b18cff' })),
+        h('div', { class: 'quick' },
+          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 80, amount: 60 }); openEditor(t); } }, 'Natural'),
+          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 30, amount: 100 }); openEditor(t); } }, 'Polished'),
+          h('button', { class: 'mini', onclick: () => { setParam(P('tune'), { ...objOf(t).tune, on: true, speed: 0, amount: 100 }); openEditor(t); } }, 'Hard (effect)')),
+        h('p', { class: 'hint' }, 'Set the song key first. For worship, “Natural” (slow speed, partial amount) fixes pitchy notes without sounding tuned. Adds about 15 ms of delay to this channel only.')));
       body.append(panel('Transient shaper', 'trans', P('trans', 'on'),
         h('div', { class: 'knobs' }, K(P('trans', 'attack'), { label: 'Attack', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true }),
           K(P('trans', 'sustain'), { label: 'Sustain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 38, big: true })),
@@ -627,6 +645,15 @@
         live.grbar.style.width = Math.min(100, gr * 5) + '%'; live.grTxt.textContent = gr > 0.1 ? `-${gr.toFixed(1)} dB` : '';
         live.gate.textContent = objOf(t).gate.on ? ((m.gg[t] || 0) > 3 ? '● closed' : '○ open') : '';
         const ds = m.ds?.[t] || 0; live.dsBar.style.width = Math.min(100, ds * 8) + '%'; live.dsTxt.textContent = ds > 0.1 ? `-${ds.toFixed(1)} dB` : '';
+        const at = m.at?.[t];
+        if (live.tuneNote) {
+          if (at) {
+            live.tuneNote.textContent = at.note;
+            live.tuneNeedle.style.left = `calc(50% + ${clamp(at.cents, -50, 50)}%)`;
+            live.tuneNeedle.style.background = Math.abs(at.cents) < 10 ? 'var(--green)' : Math.abs(at.cents) < 25 ? 'var(--yellow)' : 'var(--red)';
+            live.tuneTxt.textContent = `${at.hz} Hz · sung ${at.cents > 0 ? '+' : ''}${at.cents} cents · corrected ${at.shift > 0 ? '+' : ''}${at.shift} cents`;
+          } else if (!objOf(t).tune.on) { live.tuneNote.textContent = '—'; live.tuneTxt.textContent = 'Turn on to detect pitch'; }
+        }
         if (m.csp && fns.setSpec) {
           const prev = live._spec;
           live._spec = prev && prev.length === m.csp.length ? m.csp.map((v, i) => Math.max(v, prev[i] - 1.5)) : m.csp;
@@ -720,7 +747,7 @@
   };
   $('#edPrev').onclick = () => stepEd(-1);
   $('#edNext').onclick = () => stepEd(1);
-  const COPYABLE = ['hpf', 'lpf', 'eq', 'comp', 'gate', 'deess', 'dyneq', 'trans', 'sat', 'sends', 'trim', 'mbc', 'limiter', 'chain', 'width'];
+  const COPYABLE = ['hpf', 'lpf', 'eq', 'comp', 'gate', 'deess', 'dyneq', 'trans', 'sat', 'tune', 'sends', 'trim', 'mbc', 'limiter', 'chain', 'width'];
   $('#edCopy').onclick = () => { clipboard = JSON.parse(JSON.stringify(objOf(edTarget))); toast('Copied ' + clipboard.name + ' settings'); };
   $('#edPaste').onclick = () => {
     if (!clipboard) return toast('Copy a strip first', true);

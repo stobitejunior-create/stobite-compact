@@ -453,3 +453,8 @@ details summary { cursor: pointer; color: var(--dim); }
 }
 .strip .row { gap: 2px; }
 .strip .row .tog { min-width: 0; padding: 0 3px; }
+.tune-read { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; align-items: center; background: var(--bg2); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+.tune-note { font-family: var(--mono); font-size: 26px; font-weight: 700; color: #b18cff; grid-row: span 2; min-width: 56px; }
+.tune-meter { position: relative; height: 10px; background: var(--bg); border-radius: 5px; }
+.tune-meter b { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 2px; background: var(--dim); }
+.tune-meter i { position: absolute; top: 1px; width: 8px; height: 8px; margin-left: -4px; border-radius: 50%; background: var(--faint); left: 50%; transition: left .12s var(--ease), background .2s; }

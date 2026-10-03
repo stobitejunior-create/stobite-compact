@@ -121,7 +121,7 @@ class App:
             m = e.mixer.read_meters()
             r = lambda a: [int(min(v, 4.0) * 1000) for v in a]
             msg = {"t": "m", "i": r(m["i"]), "p": r(m["p"]), "rm": r(m["r"]), "m": r(m["m"]), "fx": r(m["fx"]),
-                   "b": {k: r(v) for k, v in m["b"].items()}, "bm": m["bm"], "mm": m["mm"], "fxd": m["fxd"],
+                   "b": {k: r(v) for k, v in m["b"].items()}, "bm": m["bm"], "mm": m["mm"], "fxd": m["fxd"], "at": m["at"],
                    "tp": round(20 * math.log10(max(m["tp"], 1e-6)), 1), "mr": int(min(m["mr"], 4) * 1000),
                    "gr": [round(v, 1) for v in m["gr"]], "gg": [round(v, 1) for v in m["gg"]],
                    "mgr": round(m["mgr"], 1), "lim": round(m["lim"], 1),

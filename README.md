@@ -15,6 +15,16 @@ A multitrack recorder, editor, mixer and mastering app for the **Behringer WING 
 
 Keep the USB cable under 5 m, or use a powered/active extension.
 
+## Shipping an update
+
+Install the command once (see below), then from any Terminal:
+
+```
+update compact "What changed"
+```
+
+It checks the code, commits and pushes, tags the next version, waits while GitHub builds the Mac DMG and the Windows installer, downloads both to `~/Downloads/Stobite Compact vX.Y.Z`, and offers to install the new Mac app. Use `update compact --minor "..."` for bigger releases.
+
 ## Run it
 
 | | |
@@ -33,7 +43,7 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 
 **Signal flow:** WING inputs → channel strip → group bus → Music / Vocal / Preaching / FX → Broadcast → Master → stream (and virtual cables). The **Routing** tab draws this map and lets you re-route anything.
 
-- **Channels:** an input picker (any WING USB input or virtual cable), drag-to-reorder, an instrument icon library (click the icon), gain/trim, phase, 12/24/48 dB low and high cuts, 4-band parametric EQ (bell, shelves, notch, high/low-pass), gate/expander, compressor (with parallel mix), de-esser, dynamic EQ, transient shaper, saturation (tape/tube/console/soft clip), pan, sends, VST3/AU inserts, and peak/RMS meters.
+- **Channels:** an input picker (any WING USB input or virtual cable), drag-to-reorder, an instrument icon library (click the icon), gain/trim, phase, 12/24/48 dB low and high cuts, 4-band parametric EQ (bell, shelves, notch, high/low-pass), gate/expander, compressor (with parallel mix), de-esser, dynamic EQ, transient shaper, saturation (tape/tube/console/soft clip), **auto-tune** (pitch correction to the song key, with retune speed, amount and voice range), pan, sends, VST3/AU inserts, and peak/RMS meters.
 - **Buses:** Lead Vocal, Backing Vocals, Drums, Bass, Guitars, Keys, Other, Music, Preaching, FX and Broadcast, plus your own. Each has EQ, compressor (sidechain-able, parallel), saturation, dynamic EQ, 3-band multiband, width/balance, lookahead true-peak limiter, **ducking**, sends and inserts, in a **reorderable, bypassable chain**.
 - **FX:** Vocal Plate, Vocal Hall, Instrument Verb (pre-delay, decay, size, damping, width, early reflections, return EQ) and a tempo-synced Delay (1/2, 1/4, dotted, 1/8, triplet, ms; feedback, filters, width, ping-pong, tap tempo), all duckable.
 - **Master:** LUFS momentary/short-term/integrated, max true peak, loudness range, RMS, spectrum, phase correlation with a mono warning, Mono/Side/L/R listen checks, configurable targets (−10 to −23 LUFS), and loudness-targeted export.

@@ -18,6 +18,7 @@ import numpy as np
 
 from . import dsp
 from .procs import (BusStrip, DynEQ, Ducker, ReverbFX, Saturator, StereoDelay, Transient, CHAIN_DEFAULT)
+from .autotune import AutoTune
 
 try:
     import pedalboard as pb
@@ -91,6 +92,7 @@ def default_strip(i):
         "dyneq": _dyneq_default(),
         "trans": {"on": False, "attack": 0, "sustain": 0},
         "sat": {"on": False, "type": "tape", "drive": 3, "mix": 100},
+        "tune": {"on": False, "amount": 100, "speed": 40, "voice": "any", "scale": "song"},
         "inserts": [],
         "pan": 0.0, "fader": 0.0, "mute": False, "solo": False,
         "sends": [-90.0, -90.0, -90.0, -90.0],
@@ -144,6 +146,7 @@ def default_state(nch):
         "fx": default_fx(),
         "master": default_master(),
         "tempo": 72.0,
+        "song": {"key": "C", "scale": "major"},
         "order": list(range(nch)),
         "cables": [{"name": f"Cable {k + 1}", "src": "master" if k == 0 else "none", "gain": 0.0} for k in range(N_CABLES)],
         "monitor": "stereo",
@@ -199,7 +202,7 @@ def migrate(state, nch):
         f.setdefault("out", "fx")
         f.setdefault("duck", _duck_default())
     st["fx"] = fx
-    for k in ("tempo", "cables", "monitor"):
+    for k in ("tempo", "cables", "monitor", "song"):
         st.setdefault(k, fresh[k])
     order = [i for i in st.get("order", []) if isinstance(i, int) and 0 <= i < nch]
     order += [i for i in range(nch) if i not in order]
@@ -306,6 +309,7 @@ class Mixer:
         self.trans = Transient(n, fs)
         self.sat = Saturator(n)
         self.dyneqs = {}
+        self.tuners = {}
         self.strips = {}
         self.master_strip = BusStrip(fs)
         self.fx = [None] * len(self.state["fx"])
@@ -329,6 +333,7 @@ class Mixer:
             for c in range(self.nch):
                 self._rebuild_filter(c)
                 self._rebuild_dyneq(c)
+                self._rebuild_tune(c)
             for b in self.state["buses"]:
                 self._rebuild_bus(b)
             self.master_strip.set_params(self.state["master"])
@@ -348,6 +353,15 @@ class Mixer:
             self.dyneqs[c] = eq
         else:
             self.dyneqs.pop(c, None)
+
+    def _rebuild_tune(self, c):
+        d = self.state["channels"][c].get("tune") or {}
+        if d.get("on"):
+            at = self.tuners.get(c) or AutoTune(self.fs)
+            at.set_params(d, self.state.get("song", {}))
+            self.tuners[c] = at
+        else:
+            self.tuners.pop(c, None)
 
     def _rebuild_bus(self, b):
         st = self.strips.get(b["id"]) or BusStrip(self.fs)
@@ -470,6 +484,8 @@ class Mixer:
                     self._rebuild_filter(c)
                 elif sec == "dyneq":
                     self._rebuild_dyneq(c)
+                elif sec == "tune":
+                    self._rebuild_tune(c)
             elif root == "buses":
                 if sec not in ("fader", "mute", "sends", "name", "color"):
                     self._rebuild_bus(self.state["buses"][int(path[1])])
@@ -485,6 +501,9 @@ class Mixer:
                     self._rebuild_fx(i, fresh=True)
                 elif sec == "params":
                     self._rebuild_fx(i)
+            elif root == "song":
+                for c in list(self.tuners):
+                    self._rebuild_tune(c)
             elif root == "tempo":
                 for i, f in enumerate(self.state["fx"]):
                     if f["type"] == "delay":
@@ -532,6 +551,7 @@ class Mixer:
             for c in range(self.nch):
                 self._rebuild_filter(c)
                 self._rebuild_dyneq(c)
+                self._rebuild_tune(c)
             for b in self.state["buses"]:
                 self._rebuild_bus(b)
             self.master_strip.set_params(self.state["master"])
@@ -569,7 +589,8 @@ class Mixer:
                    mgr=float(ms.comp.comp_gr.max()), lim=ms.limiter.gr, tp=self.m_tp,
                    b={k: v for k, v in self.m_bus.items()},
                    bm={bid: st.meters() for bid, st in self.strips.items()}, mm=ms.meters(),
-                   fxd=[round(d.gr, 1) for d in self.fx_duck])
+                   fxd=[round(d.gr, 1) for d in self.fx_duck],
+                   at={c: r for c, at in list(self.tuners.items()) if (r := at.readout())})
         self.reset_meters()
         return out
 
@@ -623,6 +644,8 @@ class Mixer:
         # ---- channel strips
         x *= c["pre"]
         self.filters.process(x)
+        for ch, at in list(self.tuners.items()):  # pitch correction before dynamics
+            x[:, ch] = at.process(x[:, ch])
         self.dyn.process(x)
         self.deess.process(x)
         for ch, eq in self.dyneqs.items():

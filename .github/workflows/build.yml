@@ -1,11 +1,10 @@
 # Builds the Mac .dmg and the Windows installer .exe on GitHub's machines.
-# Runs on every push to main, or by hand from the Actions tab.
-# Pushing a tag like v1.0.0 also publishes both files as a GitHub Release.
+# Runs when a version tag (v1.2.3) is pushed — e.g. by `update compact` — or by hand from the Actions tab,
+# and publishes both files as a GitHub Release.
 name: Build apps
 on:
   push:
-    branches: [main]
-    tags: ["v*"]
+    tags: ["v*"]        # each "update compact" pushes a new version tag
   workflow_dispatch:
 
 permissions:

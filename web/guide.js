@@ -50,6 +50,14 @@
       <p>An EQ band that only moves when its frequency range gets loud. It's the cleanest way to fix problems that come and go:</p>
       <ul><li><b>Harshness</b>: a band at 2.5–4 kHz cuts only on the loud, shouty notes.</li><li><b>Mud</b>: 200–350 Hz cuts when the band builds up and stays open when it's sparse.</li><li><b>Boomy bass notes</b>: 80–150 Hz, so one note doesn't jump out.</li><li><b>Presence</b>: a positive range lifts the vocal only when it's being covered.</li></ul>
       <p><b>Range</b> is how far it moves (negative = cut, positive = boost). <b>Static</b> is a fixed boost or cut that's always there. Threshold, Attack and Release work like a compressor. On buses you can drive it from a <b>sidechain</b>: for example, the Music bus can dip 2–4 kHz only while the Lead Vocal sings, making room for the words.</p>`],
+    ['tune', 'Auto-tune (pitch correction)', `
+      <p>Auto-tune listens to a vocal, works out which note is being sung, and gently pulls it to the nearest note in the <b>song's key</b>.</p>
+      <ul><li><b>Song key / scale</b>: set this for each song (it's shared by all tuned channels). If the key is wrong, it will pull singers to the wrong notes.</li>
+      <li><b>Retune speed</b>: how quickly a note is pulled into tune. 60–120 ms is natural and keeps slides and vibrato. 20–40 ms sounds polished and modern. 0 ms is the hard, robotic “auto-tune effect”.</li>
+      <li><b>Amount</b>: how much of the way to correct. 50–70% leaves the human character in.</li>
+      <li><b>Voice</b>: limits the detection range so it doesn't get confused by the band bleeding into the mic.</li>
+      <li><b>Notes: any note</b> corrects to the nearest semitone when you don't know the key.</li></ul>
+      <p>The readout shows the note and how far off it was: green means within 10 cents, yellow within 25, red further. It only affects the broadcast; recordings stay raw, so you can decide later. Use it on lead and backing vocals, never on instruments or speech.</p>`],
     ['trans', 'Transient shaper', `
       <p>Changes the <b>attack</b> (the initial hit) and <b>sustain</b> (the ring after it) without compression. +Attack gives a kick or snare more click and punch. −Sustain tightens boomy toms and roomy drums. Small amounts (±2–4 dB) go a long way.</p>`],
     ['sat', 'Saturation', `
