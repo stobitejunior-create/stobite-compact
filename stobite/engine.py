@@ -3,6 +3,7 @@ import collections
 import json
 import os
 import sys
+import shutil
 import threading
 import time
 import traceback
@@ -646,7 +647,50 @@ class Engine:
         return inst.params() if inst is not None else []
 
     # ------------------------------------------------------------- export
-    def export(self, kind="mix", fmt="wav", start=None, end=None, target=None):
+    # LAME constant-bitrate steps: libsndfile takes a 0-1 "compression level", not kbps
+    MP3_LEVEL = {320: 0.0, 256: 0.18, 224: 0.33, 192: 0.44, 160: 0.55, 128: 0.65, 112: 0.72, 96: 0.78, 64: 0.88}
+
+    @classmethod
+    def out_format(cls, fmt="wav", depth="24", kbps=None, channels=2):
+        """(file extension, soundfile keyword arguments) for an export format."""
+        pcm = {"16": "PCM_16", "24": "PCM_24", "32f": "FLOAT"}
+        if fmt == "mp3":
+            k = min(cls.MP3_LEVEL, key=lambda b: abs(b - int(kbps or 192)))
+            return "mp3", {"format": "MP3", "subtype": "MPEG_LAYER_III", "bitrate_mode": "CONSTANT",
+                           "compression_level": cls.MP3_LEVEL[k]}
+        if fmt == "opus":
+            # Opus is variable-rate: busy sound sits at the chosen rate, silence drops far below it.
+            # Its level scale assumes stereo, so a mono file asks for twice the number to land on it.
+            rate = int(kbps or 128) * (2 if channels == 1 else 1)
+            level = min(max((514 - rate) / 502, 0.0), 1.0)
+            return "opus", {"format": "OGG", "subtype": "OPUS", "compression_level": level}
+        if fmt == "flac":
+            return "flac", {"format": "FLAC", "subtype": pcm["24" if depth == "32f" else depth]}
+        if fmt == "aiff":
+            return "aiff", {"format": "AIFF", "subtype": pcm.get(depth, "PCM_24")}
+        return "wav", {"format": "WAV", "subtype": pcm.get(depth, "PCM_24")}
+
+    def export_estimate(self, start=None, end=None):
+        """What the export window needs to predict file sizes."""
+        s = self.session
+        start = int(start or 0)
+        end = int(end or s.length())
+        with s.lock:
+            tracks = len({c["track"] for c in s.clips if not c.get("mute")})
+        proj = 0
+        for root, _, names in os.walk(s.dir):
+            for n in names:
+                if not n.endswith(".tmp"):
+                    try:
+                        proj += os.path.getsize(os.path.join(root, n))
+                    except OSError:
+                        pass
+        outdir = os.path.join(home_dir(), "Exports")
+        os.makedirs(outdir, exist_ok=True)
+        return {"seconds": max(end - start, 0) / s.sr, "tail": 2.0, "sr": s.sr, "tracks": tracks,
+                "projectBytes": proj, "freeBytes": shutil.disk_usage(outdir).free}
+
+    def export(self, kind="mix", fmt="wav", start=None, end=None, target=None, depth="24", kbps=None, channels=2):
         if self.export_job and self.export_job.get("running"):
             raise RuntimeError("An export is already running")
         s = self.session
@@ -656,10 +700,16 @@ class Engine:
             raise RuntimeError("Nothing to export - the timeline is empty")
         job = {"running": True, "progress": 0.0, "kind": kind, "file": None, "error": None}
         self.export_job = job
-        threading.Thread(target=self._export, args=(job, kind, fmt, start, end, target), daemon=True).start()
+        if fmt == "opus" and s.sr not in (8000, 12000, 16000, 24000, 48000):
+            raise RuntimeError("Opus needs a 48 kHz session. Pick MP3 or another format.")
+        if fmt == "mp3" and s.sr > 48000:
+            raise RuntimeError("MP3 can't go above 48 kHz. Pick WAV, AIFF or FLAC.")
+        opts = {"depth": str(depth), "kbps": kbps, "channels": 1 if int(channels or 2) == 1 else 2}
+        threading.Thread(target=self._export, args=(job, kind, fmt, start, end, target, opts), daemon=True).start()
         return job
 
-    def _export(self, job, kind, fmt, start, end, target=None):
+    def _export(self, job, kind, fmt, start, end, target=None, opts=None):
+        opts = opts or {}
         s = self.session
         try:
             stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -673,8 +723,9 @@ class Engine:
                 os.makedirs(folder, exist_ok=True)
                 used = sorted({c["track"] for c in clips if not c.get("mute")})
                 names = self.mixer.state["channels"]
-                files = {t: sf.SoundFile(os.path.join(folder, f"{t + 1:02d} {names[t]['name']}.wav".replace("/", "-")),
-                                         "w", s.sr, 1, "PCM_24") for t in used}
+                ext, kw = self.out_format(fmt if fmt in ("wav", "aiff", "flac") else "wav", opts.get("depth", "24"))
+                files = {t: sf.SoundFile(os.path.join(folder, f"{t + 1:02d} {names[t]['name']}.{ext}".replace("/", "-")),
+                                         "w", s.sr, 1, **kw) for t in used}
                 pos = start
                 while pos < end:
                     n = min(block, end - pos)
@@ -686,6 +737,7 @@ class Engine:
                 for f in files.values():
                     f.close()
                 job["file"] = folder
+                job["bytes"] = sum(os.path.getsize(f.name) for f in files.values())
             else:
                 def make_mix(extra_db=0.0):
                     st = self.mixer.snapshot()
@@ -714,19 +766,21 @@ class Engine:
                     job["gain"] = round(gain, 1)
                 mix = make_mix(gain)
                 # fresh plugin instances so the live engine's copies aren't shared across threads
-                ext = "mp3" if fmt == "mp3" else "wav"
+                nout = opts.get("channels", 2)
+                ext, kw = self.out_format(fmt, opts.get("depth", "24"), opts.get("kbps"), nout)
                 path = os.path.join(outdir, f"{s.name} mix {stamp}.{ext}")
-                kw = {"format": "MP3"} if ext == "mp3" else {"subtype": "PCM_24"}
-                with sf.SoundFile(path, "w", s.sr, 2, **kw) as f:
+                with sf.SoundFile(path, "w", s.sr, nout, **kw) as f:
                     pos = start
                     while pos < end + tail:
                         n = min(block, end + tail - pos)
                         d = reader.render(pos, n, clips) if pos < end else np.zeros((n, s.nch), np.float32)
                         mix.auto = self.auto_for(s, pos)
-                        f.write(mix.process(d))
+                        y = mix.process(d)
+                        f.write(y.mean(axis=1) if nout == 1 else y)
                         pos += n
                         job["progress"] = min(((passes - 1) + (pos - start) / (end + tail - start)) / passes, 1)
                 job["file"] = path
+                job["bytes"] = os.path.getsize(path)
                 job["lufs"] = round(mix.loud.integrated(), 1)
             reader.close()
         except Exception as ex:

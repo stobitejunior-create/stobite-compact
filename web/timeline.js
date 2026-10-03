@@ -638,28 +638,126 @@
   };
   $('#btnExport').onclick = () => openExport();
 
+  // ---- export formats: what each costs on disk
+  const EXPORT_FORMATS = {
+    wav:  { label: 'WAV', note: 'uncompressed, plays everywhere', pcm: true, depths: ['16', '24', '32f'] },
+    aiff: { label: 'AIFF', note: 'uncompressed, Apple’s WAV', pcm: true, depths: ['16', '24', '32f'] },
+    flac: { label: 'FLAC', note: 'lossless, about half the size', flac: true, depths: ['16', '24'] },
+    mp3:  { label: 'MP3', note: 'small, plays everywhere', lossy: true, rates: [64, 96, 128, 160, 192, 224, 256, 320], def: 192 },
+    opus: { label: 'Opus (.opus)', note: 'smallest for its quality; web and phones', lossy: true, rates: [64, 96, 128, 160, 192, 256], def: 128 },
+  };
+  const DEPTH_LABEL = { '16': '16-bit (CD)', '24': '24-bit (studio)', '32f': '32-bit float (no clipping)' };
+  const RATE_HINT = { 64: 'speech only', 96: 'speech / sermon podcast', 128: 'good', 160: 'good', 192: 'very good', 224: 'very good', 256: 'excellent', 320: 'best MP3' };
+  const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(n >= 1e10 ? 1 : 2) + ' GB' : n >= 1e6 ? (n / 1e6).toFixed(n >= 1e8 ? 0 : 1) + ' MB' : Math.max(1, Math.round(n / 1e3)) + ' KB';
+  const fmtDur = sec => { sec = Math.round(sec); const hh = Math.floor(sec / 3600), mm = Math.floor(sec / 60) % 60, ss = sec % 60; return (hh ? hh + ':' + String(mm).padStart(2, '0') : mm) + ':' + String(ss).padStart(2, '0'); };
+  const loadPrefs = () => { try { return JSON.parse(localStorage.getItem('stb-export') || '{}'); } catch (e) { return {}; } };
+  const savePrefs = p => { try { localStorage.setItem('stb-export', JSON.stringify(p)); } catch (e) { /* private mode */ } };
+
   window.openExport = function (start, end, target) {
-    modal((card, close) => {
-      const kind = h('select', {}, h('option', { value: 'mix' }, 'Stereo mix (with all mixer effects)'), h('option', { value: 'tracks' }, 'Separate tracks — open in Logic / Pro Tools / Cubase'),
-        h('option', { value: 'project' }, 'Project file (.stobite) — every recording + the whole mix, to open on another computer'));
-      const f = h('select', {}, h('option', { value: 'wav' }, 'WAV 24-bit'), h('option', { value: 'mp3' }, 'MP3'));
-      const loud = h('select', {}, h('option', { value: '' }, 'Off — keep mixer level'),
+    modal(async (card, close) => {
+      const pref = loadPrefs();
+      const sel = (opts, val) => h('select', {}, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val) }, l)));
+      const kind = sel([['mix', 'Stereo mix (with all mixer effects)'], ['tracks', 'Separate tracks: open in Logic / Pro Tools / Cubase'],
+        ['project', 'Project file (.stobite): every recording + the whole mix, to open on another computer']], pref.kind || 'mix');
+      const f = h('select');
+      const depth = h('select');
+      const rate = h('select');
+      const chans = sel([[2, 'Stereo'], [1, 'Mono (half the size; fine for a sermon podcast)']], pref.channels || 2);
+      const loud = h('select', {}, h('option', { value: '' }, 'Off: keep mixer level'),
         ...[[-14, 'Streaming / YouTube / livestream (−14 LUFS)'], [-16, 'Apple Music / podcasts (−16 LUFS)'], [-18, 'Gentle / dynamic (−18 LUFS)'], [-23, 'Broadcast EBU R128 (−23 LUFS)']]
           .map(([v, l]) => h('option', { value: v, selected: target === v }, l)));
+      const row = (label, el) => h('div', { class: 'f' }, h('span', {}, label), el);
+      const fRow = row('Format', f), depthRow = row('Bit depth', depth), rateRow = row('Bitrate', rate), chRow = row('Channels', chans), loudRow = row('Loudness', loud);
+      const sizeNum = h('div', { class: 'xsize-num' }, '…'), sizeSub = h('div', { class: 'xsize-sub' }), sizeNote = h('div', { class: 'xsize-note' });
+      const sizeBox = h('div', { class: 'xsize' }, h('div', { class: 'xsize-l' }, 'Estimated file size'), sizeNum, sizeSub, sizeNote);
       const prog = h('div', { class: 'progress' }, h('i'));
       const out = h('div');
       const go = h('button', { class: 'btn accent' }, 'Export');
-      const loudRow = h('div', { class: 'f' }, h('span', {}, 'Loudness'), loud);
-      kind.onchange = () => { f.disabled = kind.value !== 'mix'; loudRow.style.display = kind.value === 'mix' ? '' : 'none'; };
       card.append(h('h3', {}, 'Export'),
         h('p', { class: 'hint' }, start != null ? `Range ${tc(start)} → ${tc(end)}` : 'Whole session (all clips, with edits applied).'),
-        h('div', { class: 'card' }, h('div', { class: 'f' }, h('span', {}, 'What'), kind), h('div', { class: 'f' }, h('span', {}, 'Format'), f), loudRow),
-        prog, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
+        h('div', { class: 'card' }, row('What', kind), fRow, depthRow, rateRow, chRow, loudRow),
+        sizeBox, prog, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
+
+      let est = null;
+      try { est = await api('export-estimate', undefined, `?start=${start ?? ''}&end=${end ?? ''}`); } catch (e) { /* preview only */ }
+
+      const fill = (el, opts, val) => { el.innerHTML = ''; opts.forEach(([v, l]) => el.append(h('option', { value: v, selected: String(v) === String(val) }, l))); };
+      let shown = 0, anim = 0;
+      let upTo = false;
+      const showSize = (lo, hi) => {   // ease the number to its new value
+        clearTimeout(anim);
+        const from = shown, t0 = performance.now();
+        const paint = v => { sizeNum.textContent = (upTo ? 'up to ' : '') + (hi ? '≈ ' + fmtBytes(v) + ' – ' + fmtBytes(v * hi / Math.max(lo, 1)) : lo ? fmtBytes(v) : '0 KB'); };
+        const step = () => {   // timers, not animation frames: those pause when the window is in the background
+          const k = Math.min((performance.now() - t0) / 260, 1), e = 1 - Math.pow(1 - k, 3);
+          shown = from + (lo - from) * e;
+          paint(shown);
+          if (k < 1) anim = setTimeout(step, 16);
+        };
+        step();
+      };
+
+      const update = (rebuild) => {
+        const k = kind.value;
+        if (rebuild) {
+          const keys = k === 'tracks' ? ['wav', 'aiff', 'flac'] : Object.keys(EXPORT_FORMATS);
+          const cur = keys.includes(f.value) ? f.value : keys.includes(pref.fmt) ? pref.fmt : 'wav';
+          fill(f, keys.map(x => [x, `${EXPORT_FORMATS[x].label}: ${EXPORT_FORMATS[x].note}`]), cur);
+        }
+        const F = EXPORT_FORMATS[f.value];
+        const isMix = k === 'mix', isProj = k === 'project';
+        if (F.depths) { const cur = F.depths.includes(depth.value) ? depth.value : F.depths.includes(pref.depth) ? pref.depth : '24'; fill(depth, F.depths.map(d => [d, DEPTH_LABEL[d]]), cur); }
+        if (F.rates) { const cur = F.rates.includes(+rate.value) ? rate.value : F.rates.includes(+pref.kbps) ? pref.kbps : F.def; fill(rate, F.rates.map(r => [r, `${r} kbps · ${RATE_HINT[r]}`]), cur); }
+        fRow.style.display = isProj ? 'none' : '';
+        depthRow.style.display = !isProj && F.depths ? '' : 'none';
+        rateRow.style.display = !isProj && F.rates ? '' : 'none';
+        chRow.style.display = isMix ? '' : 'none';
+        loudRow.style.display = isMix ? '' : 'none';
+        savePrefs({ kind: k, fmt: f.value, depth: depth.value, kbps: rate.value, channels: chans.value });
+
+        if (!est) { sizeNum.textContent = '—'; sizeSub.textContent = 'Size preview unavailable'; return; }
+        const sr = est.sr, srTxt = (sr / 1000) + ' kHz';
+        sizeNote.className = 'xsize-note'; sizeNote.textContent = '';
+        let lo = 0, hi = 0, sub = '', note = '';
+        if (isProj) {
+          lo = est.projectBytes;
+          sub = 'Every recording, as it is now, plus the mix';
+          note = 'Exact: it is a copy of the project folder.';
+        } else {
+          const sec = est.seconds + (isMix ? est.tail : 0);
+          const nch = isMix ? +chans.value : 1, files = isMix ? 1 : est.tracks;
+          const what = isMix ? (nch === 1 ? 'mono' : 'stereo') : `${files} mono track${files === 1 ? '' : 's'}`;
+          if (F.lossy) {
+            lo = +rate.value * 1000 / 8 * sec * files;
+            sub = `${fmtDur(sec)} · ${what} · ${F.label} ${rate.value} kbps`;
+            note = f.value === 'mp3' ? 'Constant bitrate: the size is exact to within a few KB.' : 'Opus saves bits on silence and quiet talk, so this is the most it will be.';
+          } else {
+            const bytes = { '16': 2, '24': 3, '32f': 4 }[depth.value];
+            const pcm = sec * sr * nch * bytes * files;
+            sub = `${fmtDur(sec)} · ${what} · ${srTxt} · ${DEPTH_LABEL[depth.value].split(' ')[0]} ${F.label}`;
+            if (F.flac) { lo = pcm * 0.45; hi = pcm * 0.7; note = 'FLAC shrinks quiet and simple sound more than loud, busy sound, so this is a range.'; }
+            else { lo = pcm; note = 'Uncompressed: the size is exact.'; }
+          }
+          if (est.seconds <= 0) { lo = hi = 0; note = 'The timeline is empty: record or import something first.'; }
+        }
+        sizeSub.textContent = sub;
+        sizeNote.textContent = note;
+        const need = hi || lo;
+        if (need > est.freeBytes * 0.95) { sizeNote.className = 'xsize-note warn'; sizeNote.textContent = `Not enough free space: ${fmtBytes(est.freeBytes)} free on this disk.`; }
+        else if (need > 1e9) sizeNote.textContent += ` ${fmtBytes(est.freeBytes)} free on this disk.`;
+        upTo = !isProj && f.value === 'opus';
+        showSize(lo, hi);
+      };
+      kind.onchange = () => update(true);
+      f.onchange = depth.onchange = rate.onchange = chans.onchange = () => update(false);
+      update(true);
+
       go.onclick = async () => {
         go.disabled = true;
         try {
           if (kind.value === 'project') await api('project-export', {});
-          else await api('export', { kind: kind.value, fmt: f.value, start, end, target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value });
+          else await api('export', { kind: kind.value, fmt: f.value, depth: depth.value, kbps: +rate.value || null, channels: +chans.value, start, end,
+            target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value });
         }
         catch (e) { out.innerHTML = ''; out.append(h('p', { class: 'err' }, e.message)); go.disabled = false; return; }
         const offM = (m) => { if (m.ex != null) prog.firstChild.style.width = (m.ex * 100) + '%'; };
@@ -669,7 +767,7 @@
           out.innerHTML = '';
           if (job.error) { out.append(h('p', { class: 'err' }, job.error)); go.disabled = false; return; }
           const local = ['localhost', '127.0.0.1'].includes(location.hostname);
-          out.append(h('p', { class: 'ok' }, 'Done: ' + job.file),
+          out.append(h('p', { class: 'ok' }, 'Done: ' + job.file + (job.bytes ? ` (${fmtBytes(job.bytes)})` : '')),
             job.lufs != null && job.kind === 'mix' ? h('p', { class: 'hint' }, `Final loudness ${job.lufs} LUFS` + (job.gain != null ? ` (measured ${job.measured}, adjusted ${job.gain > 0 ? '+' : ''}${job.gain} dB)` : '')) : null,
             job.kind === 'project' ? h('p', { class: 'hint' }, 'Copy this one file to a USB stick or cloud drive. On the other computer: Edit → Import, or drag it onto the timeline.') : null,
             job.kind !== 'tracks' ? h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(job.file), style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Download') : null,

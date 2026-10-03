@@ -300,6 +300,8 @@ class App:
                 e.new_session(body.get("name") or time.strftime("Service %Y-%m-%d"))
                 await self._push("mixer")
                 return web.json_response({"ok": True})
+            if name == "export-estimate":
+                return web.json_response(e.export_estimate(q.get("start"), q.get("end")))
             if name == "projects":
                 from .session import list_sessions
                 items = list_sessions(detail=True)
@@ -325,7 +327,8 @@ class App:
                 e.save()
                 return web.json_response({"ok": True})
             if name == "export":
-                job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"))
+                job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"),
+                               body.get("depth", "24"), body.get("kbps"), body.get("channels", 2))
                 return web.json_response(job)
             if name == "peaks":
                 spp = int(q.get("spp", 1024))

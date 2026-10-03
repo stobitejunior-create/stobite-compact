@@ -50,7 +50,7 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 - **Presets:** 21 source presets (Lead/Worship/Background vocal, Preaching, Kick, Snare, Toms, Hi-hat, Overheads, Room, Bass, Electric/Acoustic guitar, Piano, Keys, Pad…) and bus presets (Vocal, Drum, Music, Speech, Broadcast, Worship Master). **Load worship broadcast template** (Routing tab) sets up every bus at once.
 - **Scenes:** Pre-Service, Worship, Preaching… with a **recall scope** (faders, mutes, EQ, dynamics, sends, FX, routing) and recall-safe channels.
 - **Automation:** Off/Read/Touch on every channel, bus, FX return and the master: volume, pan, mute, sends, bus and FX levels, ducking, plug-in parameters.
-- **Edit:** 48-track raw recording, split/trim/move/fades, ripple range delete, markers, loop, **drag-and-drop audio import**, export of the mix or separate tracks.
+- **Edit:** 48-track raw recording, split/trim/move/fades, ripple range delete, markers, loop, **drag-and-drop audio import**, export of the mix or separate tracks: WAV / AIFF (16, 24 or 32-bit float), FLAC (16/24), MP3 (64–320 kbps constant) or Opus (64–256 kbps), stereo or mono, with a live estimate of the file size and free disk space.
 - **Virtual cables:** 4 stereo cables (speaker and microphone at once). Attach BlackHole 16ch (Mac) or VB-Cable (Windows) to send them to OBS or Zoom.
 - **Phone remote:** the same app at the address shown in Setup. The optional WING tab (off by default, Setup) can control the console itself.
 
@@ -85,7 +85,7 @@ The **phone remote** is off by default (Setup). When off, only this computer can
 
 ## Files
 
-Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording all 48 channels uses about 25 GB per hour, so disarm unused channels.
+Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording uses about 0.52 GB per channel per hour (24 channels for 2 hours is about 25 GB; all 48 is about 25 GB per hour), so disarm unused channels.
 
 ## Shortcuts
 
