@@ -29,16 +29,21 @@ Keep the USB cable under 5 m, or use a powered/active extension.
 
 ## What's in it
 
-- **Record:** up to 48 channels at once to 24-bit WAV, one file per channel. Arm or disarm per track.
-- **Edit:** waveform timeline with split, trim, move between tracks, fades, clip gain, mute, and duplicate. **Range delete with ripple** removes a gap across every track at once. Markers, unlimited undo/redo, audio import, and **loop playback** of a selected range (⟳ or L).
-- **Automation:** each track and the master has an **A** button that cycles Off → Read (green, plays back moves) → Touch (yellow, records your fader, pan and mute moves while playing, from this computer or a phone). Use the toolbar "Automation" menu to show volume, pan or mute curves. Click to add a point, drag to move it, and Alt-click or double-click to delete it. Exports include automation.
-- **Mix:** every channel has trim, polarity, 12/24 dB low cut, high cut, a gate, a 4-band parametric EQ with a draggable curve, a compressor with a gain-reduction meter, a **de-esser**, a live spectrum behind the EQ, pan, mute/solo, and 4 sends to Hall, Plate, Delay and Chorus effects (each can be switched to reverb, plate, delay, chorus, phaser or doubler). It also has starting-point presets (Vocal, Kick, Bass, Acoustic, Keys, Speech), channel copy/paste, and **VST3 / Audio Unit plug-ins**.
-- **Master:** EBU R128 loudness meter (momentary, short-term and integrated LUFS) with a history graph against your target, spectrum analyser, peak meters, phase correlation, and a mastering chain (tone EQ → glue compressor → saturation → stereo width → limiter). **Auto-level** sets the output gain toward the target. **Export mastered mix** measures the mix and hits the target exactly (for example −14 LUFS for YouTube and livestreams).
-- **Export:** stereo WAV or MP3, or **separate tracks** with your edits applied, ready to open in Logic, Pro Tools or Cubase.
-- **Scenes:** save and recall the whole mixer.
-- **WING tab:** moves the real WING faders and mutes over the network for channels, aux, bus and main. There is no delay, so the room hears changes instantly.
-- **Remote:** open the address shown in Setup (for example `http://192.168.1.35:8730`) on any phone. Every connected device stays in sync. You can set a PIN if guests use the Wi-Fi.
-- **Undo:** ⌘Z undoes edits in the Edit view and mixer changes in the Mixer and Master views or the channel editor.
+Stobite Compact is a **second, independent mixer** for the livestream. The WING keeps mixing the room; this app receives every channel **raw** over USB and never changes the WING.
+
+**Signal flow:** WING inputs → channel strip → group bus → Music / Vocal / Preaching / FX → Broadcast → Master → stream (and virtual cables). The **Routing** tab draws this map and lets you re-route anything.
+
+- **Channels:** an input picker (any WING USB input or virtual cable), drag-to-reorder, an instrument icon library (click the icon), gain/trim, phase, 12/24/48 dB low and high cuts, 4-band parametric EQ (bell, shelves, notch, high/low-pass), gate/expander, compressor (with parallel mix), de-esser, dynamic EQ, transient shaper, saturation (tape/tube/console/soft clip), pan, sends, VST3/AU inserts, and peak/RMS meters.
+- **Buses:** Lead Vocal, Backing Vocals, Drums, Bass, Guitars, Keys, Other, Music, Preaching, FX and Broadcast, plus your own. Each has EQ, compressor (sidechain-able, parallel), saturation, dynamic EQ, 3-band multiband, width/balance, lookahead true-peak limiter, **ducking**, sends and inserts, in a **reorderable, bypassable chain**.
+- **FX:** Vocal Plate, Vocal Hall, Instrument Verb (pre-delay, decay, size, damping, width, early reflections, return EQ) and a tempo-synced Delay (1/2, 1/4, dotted, 1/8, triplet, ms; feedback, filters, width, ping-pong, tap tempo), all duckable.
+- **Master:** LUFS momentary/short-term/integrated, max true peak, loudness range, RMS, spectrum, phase correlation with a mono warning, Mono/Side/L/R listen checks, configurable targets (−10 to −23 LUFS), and loudness-targeted export.
+- **Presets:** 21 source presets (Lead/Worship/Background vocal, Preaching, Kick, Snare, Toms, Hi-hat, Overheads, Room, Bass, Electric/Acoustic guitar, Piano, Keys, Pad…) and bus presets (Vocal, Drum, Music, Speech, Broadcast, Worship Master). **Load worship broadcast template** (Routing tab) sets up every bus at once.
+- **Scenes:** Pre-Service, Worship, Preaching… with a **recall scope** (faders, mutes, EQ, dynamics, sends, FX, routing) and recall-safe channels.
+- **Automation:** Off/Read/Touch on every channel, bus, FX return and the master: volume, pan, mute, sends, bus and FX levels, ducking, plug-in parameters.
+- **Edit:** 48-track raw recording, split/trim/move/fades, ripple range delete, markers, loop, **drag-and-drop audio import**, export of the mix or separate tracks.
+- **Virtual cables:** 4 stereo cables (speaker and microphone at once). Attach BlackHole 16ch (Mac) or VB-Cable (Windows) to send them to OBS or Zoom.
+- **Guide** (book icon, top right): what every control does, plus worship and preaching recipes.
+- **Phone remote:** the same app at the address shown in Setup. The optional WING tab (off by default, Setup) can control the console itself.
 
 ## Two ways to fix the room sound from outside
 

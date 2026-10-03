@@ -1,6 +1,8 @@
 """HTTP + WebSocket server. The desktop window and every remote browser on the
 Wi-Fi use the same UI and stay in sync through /ws."""
 import asyncio
+import copy
+import math
 import glob
 import json
 import os
@@ -101,6 +103,8 @@ class App:
 
     def info(self):
         i = self.engine.info()
+        cb = self.engine.cables
+        i["cables"] = {"status": cb.status, "error": cb.error, "names": cb.names}
         i["urls"] = [f"http://{ip}:{PORT}" for ip in lan_ips()]
         i["wing"] = {"ip": self.wing.ip, "connected": self.wing.connected}
         return i
@@ -116,7 +120,9 @@ class App:
                 e.stop()  # ran off the end of the recording
             m = e.mixer.read_meters()
             r = lambda a: [int(min(v, 4.0) * 1000) for v in a]
-            msg = {"t": "m", "i": r(m["i"]), "p": r(m["p"]), "m": r(m["m"]), "fx": r(m["fx"]),
+            msg = {"t": "m", "i": r(m["i"]), "p": r(m["p"]), "rm": r(m["r"]), "m": r(m["m"]), "fx": r(m["fx"]),
+                   "b": {k: r(v) for k, v in m["b"].items()}, "bm": m["bm"], "mm": m["mm"], "fxd": m["fxd"],
+                   "tp": round(20 * math.log10(max(m["tp"], 1e-6)), 1), "mr": int(min(m["mr"], 4) * 1000),
                    "gr": [round(v, 1) for v in m["gr"]], "gg": [round(v, 1) for v in m["gg"]],
                    "mgr": round(m["mgr"], 1), "lim": round(m["lim"], 1),
                    "ph": e.playhead, "pl": e.playing, "rc": e.recording, "ld": round(e.load, 2)}
@@ -125,10 +131,12 @@ class App:
                 msg["dr"] = e.recorder.dropped
             lm, ls, corr = e.mixer.loud.read()
             msg["lu"] = [round(lm, 1), round(ls, 1), round(corr, 2)]
+            msg["tpx"] = round(20 * math.log10(max(e.mixer.loud.tp_max, 1e-6)), 1)
             tick = getattr(self, "_tick", 0) + 1
             self._tick = tick
             if tick % 10 == 0:
                 msg["li"] = round(e.mixer.loud.integrated(), 1)
+                msg["lra"] = round(e.mixer.loud.lra(), 1)
             if self.want_spectrum:
                 msg["sp"] = e.mixer.loud.spectrum()
             if e.mixer.focus is not None:
@@ -137,6 +145,9 @@ class App:
             a = e.last_auto if e.playing else None
             if a:
                 msg["au"] = {"f": a["fader"], "p": a["pan"], "m": a["mute"], "M": a["master"]}
+            if e.playing and e.auto_values:
+                msg["av"] = dict(e.auto_values)
+                e.auto_values.clear()
             if e.export_job and e.export_job.get("running"):
                 msg["ex"] = round(e.export_job["progress"], 3)
             await self.broadcast(msg)
@@ -190,7 +201,10 @@ class App:
             for c, ch in enumerate(st["channels"]):
                 ch["inserts"] = e.mixer.state["channels"][c].get("inserts", [])
             st["master"]["inserts"] = e.mixer.state["master"].get("inserts", [])
-            e.mixer.replace_state(st)
+            cur_bus = {b["id"]: b.get("inserts", []) for b in e.mixer.state["buses"]}
+            for b in st.get("buses", []):
+                b["inserts"] = cur_bus.get(b["id"], [])
+            e.mixer.apply_state(st)
             e.dirty = True
             self.mix_ck = 0
             await self.broadcast({"t": "mixer", "mixer": self.mixer_public()})
@@ -245,13 +259,16 @@ class App:
                 return web.json_response(self.info())
             if name == "config":
                 restart = any(k in body for k in ("input", "output", "sr", "block"))
+                restart_cables = any(k in body for k in ("cable_out", "cable_in"))
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
-                          "direct_offset", "monitor_live", "pin"):
+                          "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
                 if restart:
                     await asyncio.get_running_loop().run_in_executor(None, e.start_audio)
+                elif restart_cables:
+                    await asyncio.get_running_loop().run_in_executor(None, e.start_cables)
                 await self.broadcast({"t": "info", "info": self.info()})
                 return web.json_response(self.info())
             if name == "loudness-reset":
@@ -299,6 +316,8 @@ class App:
                 return web.json_response(lst[int(q["idx"])].params())
             if name == "insert-param":
                 e.insert_param(body["target"], int(body["idx"]), body["key"], body["v"])
+                if e.touch(["ins", str(body["target"]), int(body["idx"]), body["key"]], body["v"]):
+                    await self.broadcast({"t": "session", "session": e.session.public()})
                 return web.json_response({"ok": True})
             if name == "insert-bypass":
                 e.insert_bypass(body["target"], int(body["idx"]), body["v"])
@@ -314,11 +333,20 @@ class App:
                 with open(os.path.join(d, safe_name(body["name"]) + ".json"), "w") as f:
                     json.dump(e.mixer.snapshot(), f)
                 return web.json_response({"ok": True})
+            if name == "scene-delete":
+                path = os.path.join(home_dir(), "Scenes", safe_name(body["name"]) + ".json")
+                if os.path.exists(path):
+                    os.remove(path)
+                return web.json_response({"ok": True})
             if name == "scene-load":
                 with open(os.path.join(home_dir(), "Scenes", safe_name(body["name"]) + ".json")) as f:
                     st = json.load(f)
-                e.mixer.replace_state(st)
-                e.restore_inserts()
+                scope = body.get("scope")  # None = everything
+                if scope is None:
+                    e.mixer.replace_state(st)
+                    e.restore_inserts()
+                else:
+                    e.mixer.apply_state(merge_scene(e.mixer.snapshot(), st, scope, set(body.get("safe", []))))
                 e.dirty = True
                 await self._push("mixer")
                 return web.json_response({"ok": True})
@@ -330,6 +358,47 @@ class App:
                 e.dirty = True
                 await self._push("mixer")
                 return web.json_response({"ok": True})
+            if name == "catalog":
+                from .catalog import catalog
+                return web.json_response(catalog())
+            if name == "bus-add":
+                bid = e.mixer.add_bus(body.get("name", ""), body.get("out", "broadcast"))
+                e.dirty = True
+                await self._push("mixer")
+                return web.json_response({"id": bid})
+            if name == "bus-remove":
+                e.mixer.remove_bus(body["id"])
+                e.dirty = True
+                await self._push("mixer")
+                return web.json_response({"ok": True})
+            if name == "wing-names":
+                # read-only: asks the WING for its channel names/colours, never changes anything on it
+                ip = body.get("ip") or e.cfg.get("wing_ip")
+                if not ip:
+                    found = await asyncio.get_running_loop().run_in_executor(None, wingmod.discover)
+                    if not found:
+                        raise RuntimeError("No WING found on the network. Check its Ethernet cable, or type its IP address.")
+                    ip = found[0]["ip"]
+                reader = wingmod.WingBridge()
+                reader.connect(ip)
+                addrs = [f"/ch/{n}/{k}" for n in range(1, 41) for k in ("name", "col", "icon")]
+                addrs += [f"/aux/{n}/{k}" for n in range(1, 9) for k in ("name", "col", "icon")]
+                for i in range(0, len(addrs), 24):
+                    reader.query(*addrs[i:i + 24])
+                    await asyncio.sleep(0.05)
+                await asyncio.sleep(1.2)
+                vals = dict(reader.values)
+                reader.close()
+                if not vals:
+                    raise RuntimeError(f"The WING at {ip} didn't answer. Is its Ethernet port on the same network?")
+                chans = []
+                for kind, count in (("ch", 40), ("aux", 8)):
+                    for n in range(1, count + 1):
+                        chans.append({"name": vals.get(f"/{kind}/{n}/name"), "col": vals.get(f"/{kind}/{n}/col"),
+                                      "icon": vals.get(f"/{kind}/{n}/icon")})
+                e.cfg["wing_ip"] = ip
+                e.save_cfg()
+                return web.json_response({"ip": ip, "channels": chans})
             if name == "wing-discover":
                 found = await asyncio.get_running_loop().run_in_executor(None, wingmod.discover)
                 return web.json_response(found)
@@ -404,6 +473,43 @@ LOGIN_HTML = """<!doctype html><meta name=viewport content="width=device-width,i
 form{display:grid;gap:12px;padding:24px;background:#1b1d21;border-radius:12px}input,button{font:inherit;padding:10px;border-radius:8px;border:1px solid #333;background:#0d0e10;color:#eee}
 button{background:#f76b15;border:0;color:#000;font-weight:600}</style>
 <form method=post action=/login><b>Stobite Compact remote</b><input name=pin type=password inputmode=numeric placeholder="PIN" autofocus><button>Enter</button></form>"""
+
+
+SCENE_SCOPES = {
+    "faders": {"channels": ["fader", "pan"], "buses": ["fader", "balance", "width"], "fx": ["ret"], "master": ["fader"]},
+    "mutes": {"channels": ["mute", "solo"], "buses": ["mute"], "fx": ["mute"], "master": ["mute"]},
+    "eq": {"channels": ["hpf", "lpf", "eq"], "buses": ["hpf", "lpf", "eq"], "master": ["hpf", "lpf", "eq"]},
+    "dynamics": {"channels": ["gate", "comp", "deess", "dyneq", "trans", "sat"],
+                 "buses": ["comp", "sat", "dyneq", "mbc", "limiter", "duck"], "master": ["comp", "sat", "dyneq", "mbc", "limiter", "width"]},
+    "sends": {"channels": ["sends"], "buses": ["sends"]},
+    "fx": {"fx": ["type", "params", "duck", "name"]},
+    "routing": {"channels": ["out", "input"], "buses": ["out"], "fx": ["out"]},
+}
+
+
+def merge_scene(cur, scene, scope, safe):
+    """Recall only the chosen parts of a scene, leaving everything else (and safe channels) alone."""
+    out = cur
+    for cat in scope:
+        for section, keys in SCENE_SCOPES.get(cat, {}).items():
+            if section == "master":
+                for k in keys:
+                    if k in scene.get("master", {}):
+                        out["master"][k] = copy.deepcopy(scene["master"][k])
+                continue
+            src_list, dst_list = scene.get(section, []), out.get(section, [])
+            if section == "buses":
+                by_id = {b["id"]: b for b in src_list}
+                pairs = [(by_id.get(b["id"]), b) for b in dst_list]
+            else:
+                pairs = list(zip(src_list, dst_list))
+            for i, (src, dst) in enumerate(pairs):
+                if src is None or (section == "channels" and i in safe):
+                    continue
+                for k in keys:
+                    if k in src:
+                        dst[k] = copy.deepcopy(src[k])
+    return out
 
 
 def build_app():

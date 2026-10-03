@@ -1,9 +1,23 @@
-"""The mixing engine: N channel strips -> FX buses -> stereo master."""
+"""The mixing engine.
+
+Signal flow (all routing is data in `state`):
+
+  inputs (WING USB / virtual cables)
+    -> channel strip: trim, phase, filters, EQ, gate, compressor, de-esser,
+       dynamic EQ, transient shaper, saturation, inserts
+    -> fader / pan -> destination bus           (sends -> FX returns)
+  group buses (Lead Vocal, BGV, Drums, Bass, Guitars, Keys, Other)
+    -> Music / Preaching / FX buses -> Broadcast bus -> Master -> stream out
+  every bus: EQ, compressor (sidechain-able, parallel mix), saturation,
+  dynamic EQ, multiband, width/balance, limiter, ducking, inserts, sends.
+"""
 import copy
 import threading
+
 import numpy as np
 
 from . import dsp
+from .procs import (BusStrip, DynEQ, Ducker, ReverbFX, Saturator, StereoDelay, Transient, CHAIN_DEFAULT)
 
 try:
     import pedalboard as pb
@@ -11,74 +25,201 @@ except Exception:  # pragma: no cover - optional
     pb = None
 
 COLORS = ["#e5484d", "#f76b15", "#ffc53d", "#46a758", "#12a594", "#0090ff", "#6e56cf", "#d6409f"]
+N_CABLES = 4
 
 FX_TYPES = {
-    "reverb": {"room_size": 0.6, "damping": 0.5, "width": 1.0, "predelay_ms": 20},
-    "plate": {"room_size": 0.35, "damping": 0.25, "width": 1.0, "predelay_ms": 0},
-    "delay": {"time_ms": 375, "feedback": 0.35, "tone": 0.6},
+    "plate": {"predelay_ms": 25, "decay": 0.45, "size": 0.35, "damping": 0.35, "width": 100, "early": 0.3, "lowcut": 300, "highcut": 9000},
+    "hall": {"predelay_ms": 40, "decay": 0.82, "size": 0.8, "damping": 0.5, "width": 100, "early": 0.25, "lowcut": 250, "highcut": 7000},
+    "room": {"predelay_ms": 10, "decay": 0.6, "size": 0.55, "damping": 0.55, "width": 100, "early": 0.4, "lowcut": 200, "highcut": 8000},
+    "delay": {"sync": True, "note": "1/8d", "time_ms": 375, "feedback": 0.3, "lowcut": 300, "highcut": 5000,
+              "width": 100, "pingpong": True, "predelay_ms": 0},
     "chorus": {"rate_hz": 0.8, "depth": 0.25, "centre_delay_ms": 7, "feedback": 0.0},
     "phaser": {"rate_hz": 0.5, "depth": 0.5, "centre_frequency_hz": 1300, "feedback": 0.0},
     "doubler": {"semitones": 0.12, "delay_ms": 18},
 }
+FX_ALIASES = {"reverb": "hall"}
+
+# id, name, kind, default destination, colour
+DEFAULT_BUSES = [
+    ("lead", "Lead Vocal", "vocal", "broadcast", "#e5484d"),
+    ("bgv", "Backing Vocals", "vocal", "broadcast", "#f76b15"),
+    ("drums", "Drums", "group", "music", "#46a758"),
+    ("bass", "Bass", "group", "music", "#12a594"),
+    ("gtr", "Guitars", "group", "music", "#0090ff"),
+    ("keys", "Keys", "group", "music", "#6e56cf"),
+    ("other", "Other Instruments", "group", "music", "#d6409f"),
+    ("music", "Music", "music", "broadcast", "#2f9e8f"),
+    ("speech", "Preaching", "speech", "broadcast", "#ffc53d"),
+    ("fx", "FX Returns", "fx", "broadcast", "#5b8def"),
+    ("broadcast", "Broadcast", "broadcast", "master", "#f76b15"),
+]
+
+OFF = {"on": False}
+
+
+def _eq_flat():
+    return {"on": True, "bands": [
+        {"type": "lowshelf", "freq": 100, "gain": 0, "q": 0.7, "on": True, "slope": 12},
+        {"type": "bell", "freq": 400, "gain": 0, "q": 1.0, "on": True, "slope": 12},
+        {"type": "bell", "freq": 2500, "gain": 0, "q": 1.0, "on": True, "slope": 12},
+        {"type": "highshelf", "freq": 8000, "gain": 0, "q": 0.7, "on": True, "slope": 12},
+    ]}
+
+
+def _dyneq_default():
+    return {"on": False, "sc": "", "bands": [
+        {"on": True, "type": "bell", "freq": 250, "q": 1.2, "gain": 0, "thr": -24, "range": -3, "att": 10, "rel": 150},
+        {"on": False, "type": "bell", "freq": 3500, "q": 2.0, "gain": 0, "thr": -26, "range": -3, "att": 3, "rel": 100},
+    ]}
+
+
+def _duck_default(src=""):
+    return {"on": False, "src": src, "amount": 2.0, "thr": -30, "att": 15, "rel": 400, "ratio": 4}
 
 
 def default_strip(i):
     return {
-        "name": f"Ch {i + 1}", "color": COLORS[(i // 8) % len(COLORS)],
+        "name": f"Ch {i + 1}", "color": COLORS[(i // 8) % len(COLORS)], "icon": "", "type": "",
+        "input": f"in:{i}", "out": "music",
         "trim": 0.0, "phase": False,
         "hpf": {"on": False, "freq": 80, "slope": 24},
-        "lpf": {"on": False, "freq": 16000},
+        "lpf": {"on": False, "freq": 16000, "slope": 12},
         "gate": {"on": False, "thr": -50, "range": 40, "att": 1, "rel": 120},
-        "eq": {"on": True, "bands": [
-            {"type": "lowshelf", "freq": 100, "gain": 0, "q": 0.7, "on": True},
-            {"type": "bell", "freq": 400, "gain": 0, "q": 1.0, "on": True},
-            {"type": "bell", "freq": 2500, "gain": 0, "q": 1.0, "on": True},
-            {"type": "highshelf", "freq": 8000, "gain": 0, "q": 0.7, "on": True},
-        ]},
-        "comp": {"on": False, "thr": -18, "ratio": 3, "knee": 6, "att": 10, "rel": 150, "makeup": 0},
+        "eq": _eq_flat(),
+        "comp": {"on": False, "thr": -18, "ratio": 3, "knee": 6, "att": 10, "rel": 150, "makeup": 0, "mix": 100, "range": 30},
         "deess": {"on": False, "freq": 6500, "thr": -28, "range": 8},
+        "dyneq": _dyneq_default(),
+        "trans": {"on": False, "attack": 0, "sustain": 0},
+        "sat": {"on": False, "type": "tape", "drive": 3, "mix": 100},
         "inserts": [],
         "pan": 0.0, "fader": 0.0, "mute": False, "solo": False,
         "sends": [-90.0, -90.0, -90.0, -90.0],
-        "link": False,
     }
+
+
+def default_bus(bid, name, kind, out, color):
+    b = {
+        "id": bid, "name": name, "kind": kind, "out": out, "color": color,
+        "fader": 0.0, "mute": False, "width": 100.0, "balance": 0.0,
+        "hpf": {"on": False, "freq": 30, "slope": 24}, "lpf": {"on": False, "freq": 18000, "slope": 12},
+        "eq": _eq_flat(),
+        "comp": {"on": False, "thr": -14, "ratio": 2, "knee": 6, "att": 30, "rel": 200, "makeup": 0, "mix": 100, "range": 30, "sc": ""},
+        "sat": {"on": False, "type": "tape", "drive": 2, "mix": 50},
+        "dyneq": _dyneq_default(),
+        "mbc": {"on": False, "x1": 180, "x2": 3500, "bands": [
+            {"thr": -20, "ratio": 2, "att": 30, "rel": 250, "gain": 0, "range": 3},
+            {"thr": -18, "ratio": 1.5, "att": 20, "rel": 200, "gain": 0, "range": 2},
+            {"thr": -22, "ratio": 2, "att": 10, "rel": 150, "gain": 0, "range": 3}]},
+        "limiter": {"on": False, "ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
+        "duck": _duck_default("bus:lead" if bid == "music" else ""),
+        "sends": [-90.0, -90.0, -90.0, -90.0],
+        "chain": list(CHAIN_DEFAULT), "inserts": [],
+    }
+    if bid == "broadcast":
+        b["limiter"].update(on=True, ceiling=-1.0)
+    return b
+
+
+def default_master():
+    m = default_bus("master", "Master", "master", "out", "#e8e9eb")
+    m.update(limiter={"on": True, "ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
+             target=-14.0, tp_max=-1.0, duck=dict(OFF))
+    return m
+
+
+def default_fx():
+    return [
+        {"name": "Vocal Plate", "type": "plate", "params": dict(FX_TYPES["plate"]), "ret": -6.0, "mute": False, "out": "fx", "duck": _duck_default()},
+        {"name": "Vocal Hall", "type": "hall", "params": dict(FX_TYPES["hall"]), "ret": -6.0, "mute": False, "out": "fx", "duck": _duck_default()},
+        {"name": "Instrument Verb", "type": "room", "params": dict(FX_TYPES["room"]), "ret": -8.0, "mute": False, "out": "fx", "duck": _duck_default()},
+        {"name": "Delay", "type": "delay", "params": dict(FX_TYPES["delay"]), "ret": -10.0, "mute": False, "out": "fx",
+         "duck": dict(_duck_default("bus:lead"), on=True, amount=6, thr=-35, att=10, rel=450)},
+    ]
 
 
 def default_state(nch):
     return {
         "channels": [default_strip(i) for i in range(nch)],
-        "fx": [
-            {"name": "Hall", "type": "reverb", "params": dict(FX_TYPES["reverb"]), "ret": -6.0, "mute": False},
-            {"name": "Plate", "type": "plate", "params": dict(FX_TYPES["plate"]), "ret": -6.0, "mute": False},
-            {"name": "Delay", "type": "delay", "params": dict(FX_TYPES["delay"]), "ret": -10.0, "mute": False},
-            {"name": "Chorus", "type": "chorus", "params": dict(FX_TYPES["chorus"]), "ret": -10.0, "mute": False},
-        ],
-        "master": {
-            "name": "Master", "fader": 0.0, "mute": False,
-            "hpf": {"on": False, "freq": 30, "slope": 24}, "lpf": {"on": False, "freq": 18000},
-            "eq": {"on": True, "bands": copy.deepcopy(default_strip(0)["eq"]["bands"])},
-            "comp": {"on": False, "thr": -12, "ratio": 2, "knee": 6, "att": 30, "rel": 200, "makeup": 0},
-            "limiter": {"on": True, "ceiling": -0.5},
-            "drive": 0.0, "width": 100.0, "target": -14.0,
-            "inserts": [],
-        },
+        "buses": [default_bus(*b) for b in DEFAULT_BUSES],
+        "fx": default_fx(),
+        "master": default_master(),
+        "tempo": 72.0,
+        "order": list(range(nch)),
+        "cables": [{"name": f"Cable {k + 1}", "src": "master" if k == 0 else "none", "gain": 0.0} for k in range(N_CABLES)],
+        "monitor": "stereo",
+        "version": 2,
     }
 
 
-def make_fx(kind, params, fs):
+def migrate(state, nch):
+    """Bring a mixer saved by an older version up to date without losing its settings."""
+    st = state
+    fresh = default_state(nch)
+    for i, c in enumerate(st.get("channels", [])):
+        c.setdefault("input", f"in:{i}")
+        for k, v in default_strip(i).items():
+            if k not in ("name", "color", "input"):
+                c.setdefault(k, copy.deepcopy(v))
+        c["hpf"].setdefault("slope", 24)
+        c["lpf"].setdefault("slope", 12)
+        for b in c["eq"].get("bands", []):
+            b.setdefault("slope", 12)
+        c["comp"].setdefault("mix", 100)
+        c["comp"].setdefault("range", 30)
+    if "buses" not in st:
+        st["buses"] = fresh["buses"]
+    known = {b["id"] for b in st["buses"]}
+    for b in fresh["buses"]:
+        if b["id"] not in known:
+            st["buses"].append(b)
+    for b in st["buses"]:
+        for k, v in default_bus(b["id"], b.get("name", b["id"]), b.get("kind", "group"), b.get("out", "master"), b.get("color", "#888")).items():
+            b.setdefault(k, copy.deepcopy(v))
+    m = st.get("master") or fresh["master"]
+    if "duck" not in m:  # master saved by version 1
+        old_drive, old_lim = m.get("drive", 0.0), m.get("limiter", {})
+        nm = default_master()
+        for k in ("fader", "mute", "hpf", "lpf", "eq", "inserts", "width", "target"):
+            if k in m:
+                nm[k] = m[k]
+        nm["comp"].update({k: v for k, v in m.get("comp", {}).items() if k in nm["comp"]})
+        nm["sat"].update(on=old_drive > 0.05, drive=max(old_drive, 1.0), type="tape", mix=100)
+        nm["limiter"].update(on=old_lim.get("on", True), ceiling=old_lim.get("ceiling", -1.0))
+        m = nm
+    for k, v in default_master().items():
+        m.setdefault(k, copy.deepcopy(v))
+    st["master"] = m
+    fx = st.get("fx") or fresh["fx"]
+    for f in fx:
+        f["type"] = FX_ALIASES.get(f["type"], f["type"])
+        if f["type"] in ("plate", "hall", "room", "delay"):
+            base = dict(FX_TYPES[f["type"]])
+            base.update({k: v for k, v in f.get("params", {}).items() if k in base})
+            f["params"] = base
+        f.setdefault("out", "fx")
+        f.setdefault("duck", _duck_default())
+    st["fx"] = fx
+    for k in ("tempo", "cables", "monitor"):
+        st.setdefault(k, fresh[k])
+    order = [i for i in st.get("order", []) if isinstance(i, int) and 0 <= i < nch]
+    order += [i for i in range(nch) if i not in order]
+    st["order"] = order
+    st["version"] = 2
+    return st
+
+
+def make_fx(kind, params, fs, tempo):
+    if kind in ("plate", "hall", "room"):
+        r = ReverbFX(fs)
+        r.set_params(params)
+        return r
+    if kind == "delay":
+        d = StereoDelay(fs)
+        d.set_params(params, tempo)
+        return d
     if pb is None:
         return None
     p = params
-    if kind in ("reverb", "plate"):
-        chain = []
-        if p.get("predelay_ms", 0) > 0:
-            chain.append(pb.Delay(delay_seconds=p["predelay_ms"] / 1000, feedback=0, mix=1.0))
-        chain.append(pb.Reverb(room_size=p["room_size"], damping=p["damping"], width=p["width"],
-                               wet_level=1.0, dry_level=0.0))
-        return pb.Pedalboard(chain)
-    if kind == "delay":
-        return pb.Pedalboard([pb.Delay(delay_seconds=p["time_ms"] / 1000, feedback=p["feedback"], mix=1.0),
-                              pb.LowpassFilter(cutoff_frequency_hz=2000 + 16000 * p.get("tone", 0.6))])
     if kind == "chorus":
         return pb.Pedalboard([pb.Chorus(rate_hz=p["rate_hz"], depth=p["depth"],
                                         centre_delay_ms=p["centre_delay_ms"], feedback=p["feedback"], mix=1.0)])
@@ -89,6 +230,12 @@ def make_fx(kind, params, fs):
         return pb.Pedalboard([pb.Delay(delay_seconds=p["delay_ms"] / 1000, feedback=0, mix=1.0),
                               pb.PitchShift(semitones=p["semitones"])])
     return None
+
+
+def run_fx(fx, mono, fs):
+    if isinstance(fx, (ReverbFX, StereoDelay)):
+        return fx.process(mono.astype(np.float32))
+    return fx.process(np.stack([mono, mono]).astype(np.float32), fs, reset=False).T
 
 
 class Insert:
@@ -137,88 +284,171 @@ class Mixer:
     def __init__(self, nch, fs, state=None):
         self.nch, self.fs = nch, fs
         self.lock = threading.RLock()
-        self.state = state or default_state(nch)
+        self.state = migrate(state or default_state(nch), nch)
         self._fit_channels()
-        for k, v in (("drive", 0.0), ("width", 100.0), ("target", -14.0)):
-            self.state["master"].setdefault(k, v)
         self.auto = None          # automation overrides for this block, set by the engine
         self.focus = None         # channel whose spectrum the editor is showing
         self.focus_ring = dsp.Ring(4096)
-        self.deess = dsp.DeEsser(nch, fs)
-        self.filters = dsp.FilterBank(nch)
-        self.dyn = dsp.Dynamics(nch, fs)
-        self.mfilters = dsp.FilterBank(2)
-        self.mdyn = dsp.Dynamics(2, fs)
-        self.limiter = dsp.Limiter(fs)
-        self.loud = dsp.Loudness(fs)
-        self.fx = [None] * 4
         self.inserts = [[] for _ in range(nch)]
         self.minserts = []
+        self.binserts = {}
+        self.loud = dsp.Loudness(fs)
+        self.cable_out = None
+        self._init_procs()
         self.reset_meters()
         self.rebuild_all()
+
+    def _init_procs(self):
+        n, fs = self.nch, self.fs
+        self.filters = dsp.FilterBank(n)
+        self.dyn = dsp.Dynamics(n, fs)
+        self.deess = dsp.DeEsser(n, fs)
+        self.trans = Transient(n, fs)
+        self.sat = Saturator(n)
+        self.dyneqs = {}
+        self.strips = {}
+        self.master_strip = BusStrip(fs)
+        self.fx = [None] * len(self.state["fx"])
+        self.fx_duck = [Ducker(fs) for _ in self.state["fx"]]
+        self.bus_last = {}
+        self.bus_cur = {}
 
     def _fit_channels(self):
         chs = self.state["channels"]
         while len(chs) < self.nch:
             chs.append(default_strip(len(chs)))
         del chs[self.nch:]
-        for c in chs:  # sessions saved by older versions
-            c.setdefault("deess", {"on": False, "freq": 6500, "thr": -28, "range": 8})
+
+    @property
+    def limiter(self):
+        return self.master_strip.limiter
 
     # ------------------------------------------------------------- compile
     def rebuild_all(self):
         with self.lock:
             for c in range(self.nch):
                 self._rebuild_filter(c)
-            self._rebuild_master_filter()
+                self._rebuild_dyneq(c)
+            for b in self.state["buses"]:
+                self._rebuild_bus(b)
+            self.master_strip.set_params(self.state["master"])
             for i in range(len(self.state["fx"])):
-                self._rebuild_fx(i)
+                self._rebuild_fx(i, fresh=True)
             self._compile()
 
     def _rebuild_filter(self, c):
         sos, act = dsp.strip_sos(self.state["channels"][c], self.fs)
         self.filters.set(c, sos, act)
 
-    def _rebuild_master_filter(self):
-        sos, act = dsp.strip_sos(self.state["master"], self.fs)
-        self.mfilters.set(0, sos, act)
-        self.mfilters.set(1, sos.copy(), act)
+    def _rebuild_dyneq(self, c):
+        d = self.state["channels"][c].get("dyneq") or {}
+        if d.get("on"):
+            eq = self.dyneqs.get(c) or DynEQ(1, self.fs)
+            eq.set_params(d)
+            self.dyneqs[c] = eq
+        else:
+            self.dyneqs.pop(c, None)
 
-    def _rebuild_fx(self, i):
+    def _rebuild_bus(self, b):
+        st = self.strips.get(b["id"]) or BusStrip(self.fs)
+        st.set_params(b)
+        self.strips[b["id"]] = st
+
+    def _rebuild_fx(self, i, fresh=False):
         f = self.state["fx"][i]
-        self.fx[i] = make_fx(f["type"], f["params"], self.fs)
+        cur = self.fx[i] if i < len(self.fx) else None
+        tempo = float(self.state.get("tempo", 72))
+        if not fresh and isinstance(cur, StereoDelay) and f["type"] == "delay":
+            cur.set_params(f["params"], tempo)
+            return
+        if not fresh and isinstance(cur, ReverbFX) and f["type"] in ("plate", "hall", "room"):
+            cur.set_params(f["params"])
+            return
+        while len(self.fx) <= i:
+            self.fx.append(None)
+            self.fx_duck.append(Ducker(self.fs))
+        self.fx[i] = make_fx(f["type"], f["params"], self.fs, tempo)
 
-    def _gains(self, fader, pan, mute, solo):
-        fader_db = fader
-        any_solo = bool(solo.any())
-        live = np.where(mute | (any_solo & ~solo), 0.0, 1.0)
-        fad = np.where(fader_db <= -89.9, 0.0, 10 ** (fader_db / 20)) * live
-        pl, pr = dsp.pan_gains(pan)
-        mix = np.stack([fad * pl, fad * pr], axis=1).astype(np.float32)
-        sends = (self._send_lin * fad[:, None]).astype(np.float32)
-        return mix, sends, fad.astype(np.float32)
+    def _topo(self):
+        buses = self.state["buses"]
+        parent = {b["id"]: b.get("out", "master") for b in buses}
+
+        def depth(bid):
+            seen, d = set(), 0
+            while bid in parent and bid not in seen:
+                seen.add(bid)
+                bid = parent[bid]
+                d += 1
+            return d if bid not in seen else 1  # a loop: treat as routed to master
+        return sorted(parent, key=lambda b: -depth(b))
 
     def _compile(self):
-        chs = self.state["channels"]
+        st = self.state
+        chs, buses = st["channels"], st["buses"]
+        dests = ["master"] + [b["id"] for b in buses]
+        di = {d: i for i, d in enumerate(dests)}
+        # a bus may not feed itself or anything upstream of it
+        order = self._topo()
         pre = np.array([dsp.db_to_lin(c["trim"]) * (-1 if c["phase"] else 1) for c in chs], dtype=np.float32)
         self._base = dict(fader=np.array([float(c["fader"]) for c in chs]), pan=np.array([float(c["pan"]) for c in chs]),
                           mute=np.array([bool(c["mute"]) for c in chs]), solo=np.array([bool(c["solo"]) for c in chs]))
-        self._send_lin = np.array([[dsp.db_to_lin(s) for s in c["sends"][:4]] for c in chs])
-        mix, sends, fad = self._gains(**self._base)
-        m = self.state["master"]
+        dest = np.array([di.get(c.get("out", "master"), -1) for c in chs])
+        send_lin = np.array([[dsp.db_to_lin(s) for s in c["sends"][:4]] for c in chs])
+        bus_send = {b["id"]: np.array([dsp.db_to_lin(s) for s in b.get("sends", [])[:4]]) for b in buses}
         self.c = dict(
-            pre=pre, mix=mix, sends=sends,
-            any_send=bool(self._send_lin.any()),
-            fx_ret=[0.0 if f["mute"] else dsp.db_to_lin(f["ret"]) for f in self.state["fx"]],
-            master=0.0 if m["mute"] else dsp.db_to_lin(m["fader"]),
-            drive=float(m.get("drive", 0)), width=float(m.get("width", 100)),
-            post=fad,
+            pre=pre, dest=dest, ndest=len(dests), di=di, order=order, send_lin=send_lin,
+            any_send=bool(send_lin.any()) or any(v.any() for v in bus_send.values()),
+            bus_send={k: v for k, v in bus_send.items() if v.any()},
+            buses={b["id"]: b for b in buses},
+            bus_gain={b["id"]: 0.0 if b["mute"] else dsp.db_to_lin(b["fader"]) for b in buses},
+            fx=[dict(ret=0.0 if f["mute"] else dsp.db_to_lin(f["ret"]), dest=di.get(f.get("out", "fx"), 0),
+                     duck=f.get("duck") if (f.get("duck") or {}).get("on") else None) for f in st["fx"]],
+            master=0.0 if st["master"]["mute"] else dsp.db_to_lin(st["master"]["fader"]),
+            inputs=[c.get("input", f"in:{i}") for i, c in enumerate(chs)],
+            cables=[(cb.get("src", "none"), dsp.db_to_lin(cb.get("gain", 0))) for cb in st.get("cables", [])],
         )
+        self._src_cache = {}
         self.dyn.set_params(chs)
         self.deess.set_params(chs)
-        self.mdyn.set_params([m, m])
-        self.limiter.on = m["limiter"]["on"]
-        self.limiter.ceiling = float(m["limiter"]["ceiling"])
+        self.trans.set_params(chs)
+        self.sat.set_params(chs)
+
+    # ------------------------------------------------------------- input routing
+    def src_index(self, n_in, n_cable=N_CABLES * 2):
+        """Column of the combined (inputs + cable returns) array for each channel; -1 = silent."""
+        key = (n_in, n_cable)
+        idx = self._src_cache.get(key)
+        if idx is None:
+            out = []
+            for spec in self.c["inputs"]:
+                try:
+                    kind, num = spec.split(":")
+                    num = int(num)
+                except Exception:
+                    out.append(-1)
+                    continue
+                if kind == "in" and 0 <= num < n_in:
+                    out.append(num)
+                elif kind == "cable" and 0 <= num < n_cable:
+                    out.append(n_in + num)
+                else:
+                    out.append(-1)
+            idx = np.array(out)
+            self._src_cache[key] = idx
+        return idx
+
+    def route_inputs(self, live, cables):
+        """Raw, untouched input for every channel (what gets recorded)."""
+        frames = live.shape[0]
+        n_in = live.shape[1]
+        idx = self.src_index(n_in)
+        allsrc = np.concatenate([live, cables], axis=1) if cables is not None else live
+        safe = np.clip(idx, 0, allsrc.shape[1] - 1)
+        x = allsrc[:, safe].astype(np.float32)
+        silent = (idx < 0) | (idx >= allsrc.shape[1])
+        if silent.any():
+            x[:, silent] = 0.0
+        return x
 
     # ------------------------------------------------------------- updates
     def set(self, path, value):
@@ -233,48 +463,87 @@ class Mixer:
             else:
                 node[last] = value
             root = path[0]
+            sec = path[2] if len(path) > 2 else None
             if root == "channels":
                 c = int(path[1])
-                if len(path) > 2 and path[2] in ("hpf", "lpf", "eq"):
+                if sec in ("hpf", "lpf", "eq"):
                     self._rebuild_filter(c)
-                if len(path) > 2 and path[2] == "link":
-                    pass
+                elif sec == "dyneq":
+                    self._rebuild_dyneq(c)
+            elif root == "buses":
+                if sec not in ("fader", "mute", "sends", "name", "color"):
+                    self._rebuild_bus(self.state["buses"][int(path[1])])
             elif root == "master":
-                if len(path) > 1 and path[1] in ("hpf", "lpf", "eq"):
-                    self._rebuild_master_filter()
+                if len(path) > 1 and path[1] not in ("fader", "mute", "target", "tp_max"):
+                    self.master_strip.set_params(self.state["master"])
             elif root == "fx":
                 i = int(path[1])
-                if len(path) > 2 and path[2] in ("type", "params"):
-                    if path[2] == "type":
-                        self.state["fx"][i]["params"] = dict(FX_TYPES.get(value, {}))
+                if sec == "type":
+                    t = FX_ALIASES.get(value, value)
+                    self.state["fx"][i]["type"] = t
+                    self.state["fx"][i]["params"] = dict(FX_TYPES.get(t, {}))
+                    self._rebuild_fx(i, fresh=True)
+                elif sec == "params":
                     self._rebuild_fx(i)
+            elif root == "tempo":
+                for i, f in enumerate(self.state["fx"]):
+                    if f["type"] == "delay":
+                        self._rebuild_fx(i)
             self._compile()
 
-    def automated(self, auto):
-        """Per-block gains with automation overrides.
-        auto: {"fader": {ch: dB}, "pan": {ch: v}, "mute": {ch: 0/1}, "master": dB or None}"""
-        b = self._base
-        fader, pan, mute = b["fader"], b["pan"], b["mute"]
-        if auto["fader"]:
-            fader = fader.copy(); idx = list(auto["fader"]); fader[idx] = list(auto["fader"].values())
-        if auto["pan"]:
-            pan = pan.copy(); idx = list(auto["pan"]); pan[idx] = list(auto["pan"].values())
-        if auto["mute"]:
-            mute = mute.copy(); idx = list(auto["mute"]); mute[idx] = [v >= 0.5 for v in auto["mute"].values()]
-        mix, sends, fad = self._gains(fader, pan, mute, b["solo"])
-        m = self.state["master"]
-        mg = self.c["master"] if auto.get("master") is None or m["mute"] else dsp.db_to_lin(auto["master"])
-        return mix, sends, fad, mg
+    def add_bus(self, name, out="broadcast"):
+        with self.lock:
+            ids = {b["id"] for b in self.state["buses"]}
+            k = 1
+            while f"bus{k}" in ids:
+                k += 1
+            b = default_bus(f"bus{k}", name or f"Bus {k}", "group", out, COLORS[k % len(COLORS)])
+            self.state["buses"].insert(max(len(self.state["buses"]) - 4, 0), b)
+            self._rebuild_bus(b)
+            self._compile()
+            return b["id"]
+
+    def remove_bus(self, bid):
+        with self.lock:
+            buses = self.state["buses"]
+            gone = next((b for b in buses if b["id"] == bid), None)
+            if gone is None or bid in ("broadcast",):
+                return
+            dest = gone.get("out", "master")
+            for c in self.state["channels"]:
+                if c.get("out") == bid:
+                    c["out"] = dest
+            for b in buses:
+                if b.get("out") == bid:
+                    b["out"] = dest
+            for f in self.state["fx"]:
+                if f.get("out") == bid:
+                    f["out"] = dest
+            self.state["buses"] = [b for b in buses if b["id"] != bid]
+            self.strips.pop(bid, None)
+            self.binserts.pop(bid, None)
+            self._compile()
+
+    def apply_state(self, state):
+        """Swap in new settings but keep running processors (no reverb/delay cut-off)."""
+        with self.lock:
+            self.state = migrate(state, self.nch)
+            self._fit_channels()
+            for c in range(self.nch):
+                self._rebuild_filter(c)
+                self._rebuild_dyneq(c)
+            for b in self.state["buses"]:
+                self._rebuild_bus(b)
+            self.master_strip.set_params(self.state["master"])
+            for i in range(len(self.state["fx"])):
+                self._rebuild_fx(i)
+            self._compile()
 
     def replace_state(self, state):
         with self.lock:
-            self.state = state
+            self.state = migrate(state, self.nch)
             self._fit_channels()
-            for k, v in (("drive", 0.0), ("width", 100.0), ("target", -14.0)):
-                self.state["master"].setdefault(k, v)
-            self.filters = dsp.FilterBank(self.nch)
-            self.dyn = dsp.Dynamics(self.nch, self.fs)
-            self.deess = dsp.DeEsser(self.nch, self.fs)
+            self._init_procs()
             self.rebuild_all()
 
     def snapshot(self):
@@ -283,34 +552,83 @@ class Mixer:
 
     # ------------------------------------------------------------- meters
     def reset_meters(self):
-        self.m_in = np.zeros(self.nch, dtype=np.float32)
-        self.m_post = np.zeros(self.nch, dtype=np.float32)
+        n = self.nch
+        self.m_in = np.zeros(n, dtype=np.float32)
+        self.m_post = np.zeros(n, dtype=np.float32)
+        self.m_rms = np.zeros(n, dtype=np.float32)
         self.m_master = np.zeros(2, dtype=np.float32)
-        self.m_fx = np.zeros(4, dtype=np.float32)
+        self.m_mrms = 0.0
+        self.m_fx = np.zeros(len(self.state["fx"]), dtype=np.float32)
+        self.m_bus = {}
+        self.m_tp = 0.0
 
     def read_meters(self):
-        out = dict(i=self.m_in, p=self.m_post, m=self.m_master, fx=self.m_fx,
+        ms = self.master_strip
+        out = dict(i=self.m_in, p=self.m_post, r=self.m_rms, m=self.m_master, mr=self.m_mrms, fx=self.m_fx,
                    gr=self.dyn.comp_gr.copy(), gg=self.dyn.gate_gr.copy(), ds=self.deess.gr.copy(),
-                   mgr=float(self.mdyn.comp_gr.max()), lim=self.limiter.gr)
+                   mgr=float(ms.comp.comp_gr.max()), lim=ms.limiter.gr, tp=self.m_tp,
+                   b={k: v for k, v in self.m_bus.items()},
+                   bm={bid: st.meters() for bid, st in self.strips.items()}, mm=ms.meters(),
+                   fxd=[round(d.gr, 1) for d in self.fx_duck])
         self.reset_meters()
         return out
 
+    # ------------------------------------------------------------- audio helpers
+    def _sc_signal(self, spec, x, fad):
+        if not spec:
+            return None
+        if spec.startswith("ch:"):
+            n = int(spec[3:])
+            if 0 <= n < self.nch:
+                v = x[:, n] * fad[n]
+                return np.stack([v, v], axis=1)
+            return None
+        if spec.startswith("bus:"):
+            bid = spec[4:]
+            sig = self.bus_cur.get(bid)
+            if sig is None:
+                sig = self.bus_last.get(bid)
+            if sig is not None and sig.shape[0] == x.shape[0]:
+                return sig
+        return None
+
+    @staticmethod
+    def _peak_db(sig):
+        if sig is None or not sig.size:
+            return -120.0
+        return 20 * np.log10(max(float(np.abs(sig).max()), 1e-9))
+
     # ------------------------------------------------------------- audio
     def process(self, x, direct_out=None):
-        """x: (frames, nch) float32, modified in place.
-        Returns stereo master (frames, 2). If direct_out is an array (frames, nch)
-        it receives the processed, pre-fader channel signals (for USB returns)."""
+        """x: (frames, nch) float32 channel inputs (already routed), modified in place.
+        Returns the stereo master. Also sets self.cable_out (frames, 8) for the virtual cables,
+        and fills direct_out with processed pre-fader channels (USB returns) if given."""
         c = self.c
+        frames = x.shape[0]
+        b = self._base
+        fader, pan, mute = b["fader"], b["pan"], b["mute"]
+        master_g = c["master"]
         auto = self.auto
         if auto is not None:
-            mix, sends_m, post, master_g = self.automated(auto)
-        else:
-            mix, sends_m, post, master_g = c["mix"], c["sends"], c["post"], c["master"]
+            if auto["fader"]:
+                fader = fader.copy(); fader[list(auto["fader"])] = list(auto["fader"].values())
+            if auto["pan"]:
+                pan = pan.copy(); pan[list(auto["pan"])] = list(auto["pan"].values())
+            if auto["mute"]:
+                mute = mute.copy(); mute[list(auto["mute"])] = [v >= 0.5 for v in auto["mute"].values()]
+            if auto.get("master") is not None and not self.state["master"]["mute"]:
+                master_g = dsp.db_to_lin(auto["master"])
+
         np.maximum(self.m_in, np.abs(x).max(axis=0), out=self.m_in)
+        # ---- channel strips
         x *= c["pre"]
         self.filters.process(x)
         self.dyn.process(x)
         self.deess.process(x)
+        for ch, eq in self.dyneqs.items():
+            x[:, ch:ch + 1] = eq.process(x[:, ch:ch + 1].copy())
+        self.trans.process(x)
+        self.sat.process(x)
         for ch, ins in enumerate(self.inserts):
             if ins:
                 col = x[:, ch:ch + 1]
@@ -321,27 +639,99 @@ class Mixer:
             direct_out[:] = x
         if self.focus is not None and 0 <= self.focus < self.nch:
             self.focus_ring.write(x[:, self.focus])
-        np.maximum(self.m_post, np.abs(x).max(axis=0) * post, out=self.m_post)
-        out = x @ mix
+
+        # ---- fader, pan, routing matrix
+        solo = b["solo"]
+        live = ~(mute | (solo.any() & ~solo))
+        fad = np.where(fader <= -89.9, 0.0, 10 ** (fader / 20)) * live
+        pl, pr = dsp.pan_gains(pan)
+        D = c["ndest"]
+        M = np.zeros((self.nch, 2 * D), np.float32)
+        rows = np.nonzero(c["dest"] >= 0)[0]
+        M[rows, 2 * c["dest"][rows]] = (fad * pl)[rows]
+        M[rows, 2 * c["dest"][rows] + 1] = (fad * pr)[rows]
+        peak = np.abs(x).max(axis=0)
+        np.maximum(self.m_post, peak * fad, out=self.m_post)
+        np.maximum(self.m_rms, np.sqrt((x * x).mean(axis=0)) * fad, out=self.m_rms)
+        Y = x @ M
+
+        # ---- FX returns (channel sends now, bus sends from the previous block)
         if c["any_send"]:
-            sends = x @ sends_m  # (frames, 4)
+            sends = x @ (c["send_lin"] * fad[:, None]).astype(np.float32)
+            for bid, g in c["bus_send"].items():
+                last = self.bus_last.get(bid)
+                if last is not None and last.shape[0] == frames:
+                    sends += np.outer(last.mean(axis=1), g).astype(np.float32)
             for i, fx in enumerate(self.fx):
-                if fx is None or c["fx_ret"][i] == 0.0:
+                f = c["fx"][i] if i < len(c["fx"]) else None
+                if fx is None or f is None or f["ret"] == 0.0:
                     continue
-                s = sends[:, i]
-                inp = np.stack([s, s]).astype(np.float32)
-                y = fx.process(inp, self.fs, reset=False).T * c["fx_ret"][i]
+                y = run_fx(fx, sends[:, i], self.fs) * f["ret"]
+                if f["duck"]:
+                    y = y * self.fx_duck[i].gain(self._peak_db(self._sc_signal(f["duck"].get("src", ""), x, fad)), f["duck"], frames)
                 self.m_fx[i] = max(self.m_fx[i], float(np.abs(y).max()))
-                out += y
-        out = out.astype(np.float32)
-        self.mfilters.process(out)
-        self.mdyn.process(out)
-        dsp.saturate(out, c["drive"])
-        dsp.stereo_width(out, c["width"])
+                d = f["dest"]
+                Y[:, 2 * d:2 * d + 2] += y
+
+        # ---- buses, children first
+        self.bus_cur = {}
+        di = c["di"]
+        for bid in c["order"]:
+            bs = c["buses"][bid]
+            k = di[bid]
+            sig = Y[:, 2 * k:2 * k + 2].copy()
+            strip = self.strips.get(bid)
+            if strip is not None:
+                det = None
+                sc = (bs.get("comp") or {}).get("sc") or (bs.get("dyneq") or {}).get("sc")
+                if sc:
+                    det = self._sc_signal(sc, x, fad)
+                strip.process(sig, det)
+                duck = bs.get("duck") or {}
+                if duck.get("on") and duck.get("src"):
+                    sig *= strip.duck.gain(self._peak_db(self._sc_signal(duck["src"], x, fad)), duck, frames)
+                else:
+                    strip.duck.gr = 0.0
+            for p in self.binserts.get(bid, ()):
+                sig = p.process(sig, self.fs)
+            sig = (sig * c["bus_gain"][bid]).astype(np.float32)
+            self.bus_cur[bid] = sig
+            mb = self.m_bus.get(bid)
+            pk = np.abs(sig).max(axis=0) if frames else np.zeros(2)
+            rms = float(np.sqrt((sig * sig).mean())) if frames else 0.0
+            self.m_bus[bid] = [max(float(pk[0]), mb[0] if mb else 0), max(float(pk[1]), mb[1] if mb else 0), max(rms, mb[2] if mb else 0)]
+            out = bs.get("out", "master")
+            if out in di and out != bid:
+                j = di[out]
+                Y[:, 2 * j:2 * j + 2] += sig
+        self.bus_last = self.bus_cur
+
+        # ---- master
+        out = Y[:, 0:2].astype(np.float32)
+        self.master_strip.process(out)
         for p in self.minserts:
             out = p.process(out, self.fs)
         out *= master_g
-        self.limiter.process(out)
+        lim = self.state["master"].get("limiter") or {}
+        if lim.get("on"):
+            np.clip(out, -1.0, 1.0, out=out)
         self.loud.process(out)
         np.maximum(self.m_master, np.abs(out).max(axis=0), out=self.m_master)
+        self.m_mrms = max(self.m_mrms, float(np.sqrt((out * out).mean())))
+        self.m_tp = max(self.m_tp, self.loud.last_tp)
+
+        # ---- virtual cables
+        cab = np.zeros((frames, N_CABLES * 2), np.float32)
+        for k, (spec, g) in enumerate(c["cables"][:N_CABLES]):
+            if spec == "none" or g == 0:
+                continue
+            if spec == "master":
+                sig = out
+            elif spec.startswith("bus:"):
+                sig = self.bus_cur.get(spec[4:])
+            else:
+                sig = self._sc_signal(spec, x, fad)
+            if sig is not None:
+                cab[:, 2 * k:2 * k + 2] = sig * g
+        self.cable_out = cab
         return out

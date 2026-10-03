@@ -9,6 +9,45 @@ from scipy import signal
 
 IDENTITY = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
+try:  # SciPy's compiled kernel without the per-call argument checking (much faster for small blocks)
+    from scipy.signal._sosfilt import _sosfilt as _sos_kernel
+except Exception:  # pragma: no cover
+    _sos_kernel = None
+
+
+def sosfilt_multi(sos, x, zi):
+    """Filter a (frames, n) block, one channel per column. zi: (n, sections, 2), updated in place."""
+    if _sos_kernel is not None:
+        xt = np.array(x.T, dtype=np.float64, order="C", copy=True)  # the kernel filters in place
+        _sos_kernel(np.ascontiguousarray(sos, dtype=np.float64), xt, zi)
+        return xt.T
+    out = np.empty(x.shape, dtype=np.float64)
+    for c in range(x.shape[1]):
+        out[:, c], zi[c] = signal.sosfilt(sos, x[:, c], zi=zi[c])
+    return out
+
+
+# 4x oversampling filter for true-peak detection, designed once
+_TP_H = signal.firwin(48, 0.24, window=("kaiser", 6.0)) * 4.0
+
+
+def true_peak(x):
+    """Per-sample true-peak envelope (max over the 4 interpolated phases), x: (frames, ch)."""
+    up = signal.upfirdn(_TP_H, x, up=4, axis=0)[: x.shape[0] * 4]
+    return np.abs(up).max(axis=1).reshape(-1, 4).max(axis=1)
+
+
+def sosfilt_fast(sos, x, zi):
+    """Filter a 1-D float block in place-style; zi is (sections, 2) and is updated. Returns y."""
+    if _sos_kernel is not None:
+        y = np.ascontiguousarray(x, dtype=np.float64)[None, :].copy()
+        z = zi[None, :, :]
+        _sos_kernel(np.ascontiguousarray(sos, dtype=np.float64), y, z)
+        zi[:] = z[0]
+        return y[0]
+    y, zi[:] = signal.sosfilt(sos, x, zi=zi)
+    return y
+
 # ---------------------------------------------------------------- biquads (RBJ cookbook)
 
 def _norm(b0, b1, b2, a0, a1, a2):
@@ -43,58 +82,66 @@ def biquad(kind, freq, gain_db, q, fs):
     return IDENTITY.copy()
 
 
-# Butterworth 24 dB/oct = two biquads with these Qs
-BW4_Q = (0.5412, 1.3066)
-N_SECTIONS = 8  # hpf x2, lpf x2, 4 eq bands
+# Butterworth Qs per slope (cascaded biquads)
+BW_Q = {12: (0.7071,), 24: (0.5412, 1.3066), 48: (0.5098, 0.6013, 0.9000, 2.5629)}
+BW4_Q = BW_Q[24]
+
+
+def _cut(kind, freq, slope, fs):
+    return [biquad(kind, freq, 0, q, fs) for q in BW_Q.get(int(slope), BW_Q[24])]
 
 
 def strip_sos(strip, fs):
-    """Build the fixed 8-section filter cascade for one channel strip."""
-    sos = np.tile(IDENTITY, (N_SECTIONS, 1))
-    active = False
+    """Filter cascade for one strip: low cut, high cut, then the EQ bands.
+    Band types: bell, lowshelf, highshelf, notch, hp, lp (hp/lp use the band's slope)."""
+    secs = []
     hpf = strip.get("hpf", {})
     if hpf.get("on"):
-        active = True
-        if hpf.get("slope", 24) >= 24:
-            sos[0] = biquad("hp", hpf["freq"], 0, BW4_Q[0], fs)
-            sos[1] = biquad("hp", hpf["freq"], 0, BW4_Q[1], fs)
-        else:
-            sos[0] = biquad("hp", hpf["freq"], 0, 0.7071, fs)
+        secs += _cut("hp", hpf["freq"], hpf.get("slope", 24), fs)
     lpf = strip.get("lpf", {})
     if lpf.get("on"):
-        active = True
-        sos[2] = biquad("lp", lpf["freq"], 0, BW4_Q[0], fs)
-        sos[3] = biquad("lp", lpf["freq"], 0, BW4_Q[1], fs)
+        secs += _cut("lp", lpf["freq"], lpf.get("slope", 24), fs)
     eq = strip.get("eq", {})
     if eq.get("on", True):
-        for i, b in enumerate(eq.get("bands", [])[:4]):
-            if b.get("on", True) and (abs(b.get("gain", 0)) > 0.01 or b.get("type") == "notch"):
-                sos[4 + i] = biquad(b.get("type", "bell"), b["freq"], b.get("gain", 0), b.get("q", 1.0), fs)
-                active = True
-    return sos, active
+        for b in eq.get("bands", []):
+            if not b.get("on", True):
+                continue
+            t = b.get("type", "bell")
+            if t in ("hp", "lp"):
+                secs += _cut(t, b["freq"], b.get("slope", 12), fs)
+            elif abs(b.get("gain", 0)) > 0.01 or t == "notch":
+                secs.append(biquad(t, b["freq"], b.get("gain", 0), b.get("q", 1.0), fs))
+    if not secs:
+        return None, False
+    return np.array(secs), True
 
 
 class FilterBank:
-    """Per-channel 8-section IIR cascade with persistent state."""
+    """Per-channel IIR cascade (any number of sections) with persistent state."""
 
     def __init__(self, nch):
         self.nch = nch
-        self.zi = np.zeros((nch, N_SECTIONS, 2))
+        self.zi = [None] * nch
         self.sos = [None] * nch
 
     def set(self, ch, sos, active):
-        self.sos[ch] = sos if active else None
+        if not active:
+            self.sos[ch] = None
+            return
+        if self.zi[ch] is None or self.zi[ch].shape[0] != sos.shape[0]:
+            self.zi[ch] = np.zeros((sos.shape[0], 2))
+        self.sos[ch] = sos
 
     def process(self, x):
         for c, sos in enumerate(self.sos):
             if sos is not None:
-                x[:, c], self.zi[c] = signal.sosfilt(sos, x[:, c], zi=self.zi[c])
+                x[:, c] = sosfilt_fast(sos, x[:, c], self.zi[c])
         return x
 
 
 # ---------------------------------------------------------------- dynamics
 
-SUB = 16  # samples per gain-computer step
+SUB = 32  # samples per gain-computer step (0.67 ms at 48 kHz)
 
 
 def _db(x):
@@ -128,11 +175,13 @@ class Dynamics:
             c_on=on("comp"), c_thr=g("comp", "thr", -18), c_ratio=np.maximum(g("comp", "ratio", 3), 1.0),
             c_knee=np.maximum(g("comp", "knee", 6), 0.01), c_att=_tc(g("comp", "att", 10), fs),
             c_rel=_tc(g("comp", "rel", 150), fs), c_make=10 ** (g("comp", "makeup", 0) / 20),
+            c_mix=np.clip(g("comp", "mix", 100) / 100, 0, 1), c_range=np.abs(g("comp", "range", 60)),
             g_on=on("gate"), g_thr=g("gate", "thr", -50), g_range=np.abs(g("gate", "range", 40)),
             g_att=_tc(g("gate", "att", 1), fs), g_rel=_tc(g("gate", "rel", 120), fs),
         )
         self.any_comp = bool(self.p["c_on"].any())
         self.any_gate = bool(self.p["g_on"].any())
+        self.any_mix = bool((self.p["c_on"] & (self.p["c_mix"] < 0.999)).any())
 
     @staticmethod
     def _smooth(target, state, att, rel):
@@ -156,13 +205,17 @@ class Dynamics:
             x[nsub * SUB:] *= lin[-1].astype(np.float32)
         return lin[-1]
 
-    def process(self, x):
+    def process(self, x, detect=None):
+        """detect: optional sidechain signal (same shape) that drives the compressor."""
         if not (self.any_comp or self.any_gate):
             return x
         frames = x.shape[0]
         nsub = max(frames // SUB, 1)
         seg = np.abs(x[: nsub * SUB]).reshape(nsub, -1, x.shape[1]).max(axis=1)
         lvl = _db(seg)
+        sc = None
+        if detect is not None:
+            sc = _db(np.abs(detect[: nsub * SUB]).reshape(nsub, -1, detect.shape[1]).max(axis=1))
         p = self.p
         if self.any_gate:
             tgt = np.where(lvl < p["g_thr"], p["g_range"], 0.0) * p["g_on"]
@@ -172,15 +225,22 @@ class Dynamics:
             self.gate_prev = self._apply(x, lin, self.gate_prev)
             lvl = lvl - red
         if self.any_comp:
-            over = lvl - p["c_thr"]
+            over = (sc if sc is not None else lvl) - p["c_thr"]
             k = p["c_knee"]
             slope = 1 - 1 / p["c_ratio"]
             tgt = np.where(over <= -k / 2, 0.0,
                            np.where(over >= k / 2, over * slope, slope * (over + k / 2) ** 2 / (2 * k)))
-            tgt = tgt * p["c_on"]
+            tgt = np.minimum(tgt, p["c_range"]) * p["c_on"]
             red, self.comp_gr = self._smooth(tgt, self.comp_gr, p["c_att"], p["c_rel"])
             lin = 10 ** (-red / 20) * np.where(p["c_on"], p["c_make"], 1.0)
-            self.comp_prev = self._apply(x, lin, self.comp_prev)
+            if self.any_mix:  # parallel ("New York") compression: blend dry back in
+                dry = x.copy()
+                self.comp_prev = self._apply(x, lin, self.comp_prev)
+                m = np.where(p["c_on"], p["c_mix"], 1.0).astype(np.float32)
+                x *= m
+                x += dry * (1 - m)
+            else:
+                self.comp_prev = self._apply(x, lin, self.comp_prev)
         return x
 
 
@@ -278,12 +338,16 @@ class Loudness:
         self.acc_n = 0
         self.bins = []          # 100 ms mean-square powers
         self.blocks = []        # 400 ms block powers for integration
+        self.short_hist = []    # 3 s short-term powers every 100 ms (loudness range)
+        self.tp_max = 0.0       # highest true peak since reset (linear)
+        self.last_tp = 0.0
         self.corr = [0.0, 0.0, 0.0]
 
     def process(self, x):
-        k = np.empty_like(x, dtype=np.float64)
-        for c in range(2):
-            k[:, c], self.zi[c] = signal.sosfilt(self.sos, x[:, c], zi=self.zi[c])
+        if len(x):
+            self.last_tp = float(true_peak(x).max())
+            self.tp_max = max(self.tp_max, self.last_tp)
+        k = sosfilt_multi(self.sos, x, self.zi)
         p = (k ** 2).sum(axis=1)
         self.corr[0] += float((x[:, 0] * x[:, 1]).sum())
         self.corr[1] += float((x[:, 0] ** 2).sum())
@@ -300,6 +364,8 @@ class Loudness:
                 self.acc, self.acc_n = 0.0, 0
                 if len(self.bins) >= 4:
                     self.blocks.append(sum(self.bins[-4:]) / 4)
+                if len(self.bins) >= 30:
+                    self.short_hist.append(sum(self.bins[-30:]) / 30)
                 del self.bins[:-30]
         mono = (x[:, 0] + x[:, 1]) * 0.5
         m = len(mono)
@@ -330,6 +396,21 @@ class Loudness:
         rel = self.lufs(float(b.mean())) - 10
         b = b[b > 10 ** ((rel + 0.691) / 10)]
         return self.lufs(float(b.mean())) if len(b) else -99.0
+
+    def lra(self):
+        """EBU Tech 3342 loudness range: spread of gated short-term loudness (10th-95th percentile)."""
+        st = np.asarray(self.short_hist)
+        if len(st) < 20:
+            return 0.0
+        st = st[st > 10 ** ((-70 + 0.691) / 10)]
+        if not len(st):
+            return 0.0
+        rel = self.lufs(float(st.mean())) - 20
+        st = st[st > 10 ** ((rel + 0.691) / 10)]
+        if len(st) < 2:
+            return 0.0
+        lu = -0.691 + 10 * np.log10(st)
+        return float(np.percentile(lu, 95) - np.percentile(lu, 10))
 
     def read(self):
         m = self.lufs(sum(self.bins[-4:]) / 4) if len(self.bins) >= 4 else -99.0
@@ -420,7 +501,7 @@ class DeEsser:
         nsub = max(frames // SUB, 1)
         lvl = np.full((nsub, self.nch), -120.0)
         for c, (sos, zi) in self.side.items():
-            y, zi[:] = signal.sosfilt(sos, x[:, c], zi=zi)
+            y = sosfilt_fast(sos, x[:, c], zi)
             lvl[:, c] = _db(np.abs(y[: nsub * SUB]).reshape(nsub, SUB).max(axis=1))
         tgt = np.minimum(np.maximum(lvl - self.thr, 0.0) * 0.75, self.rng) * self.on
         red, self.gr = Dynamics._smooth(tgt, self.gr, self.att, self.rel)

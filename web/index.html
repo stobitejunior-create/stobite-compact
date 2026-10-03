@@ -12,20 +12,21 @@
 <header id="top">
   <div class="brand"><span class="logo">S</span><span class="brand-name">Stobite <b>Compact</b></span></div>
   <div class="transport">
-    <button class="tbtn" id="btnHome" title="Go to start (Home)">⏮</button>
-    <button class="tbtn" id="btnBack" title="Back 5s (,)">⏪</button>
-    <button class="tbtn play" id="btnPlay" title="Play / Stop (Space)">▶</button>
-    <button class="tbtn" id="btnStop" title="Stop">■</button>
-    <button class="tbtn rec" id="btnRec" title="Record all armed channels (R)">●</button>
-    <button class="tbtn" id="btnFwd" title="Forward 5s (.)">⏩</button>
-    <button class="tbtn loop" id="btnLoop" title="Loop the selected range (L)">⟳</button>
+    <button class="tbtn" id="btnHome" title="Go to start (Home)" data-ic="start"></button>
+    <button class="tbtn" id="btnBack" title="Back 5 seconds (,)" data-ic="back"></button>
+    <button class="tbtn play" id="btnPlay" title="Play / Pause (Space)" data-ic="play"></button>
+    <button class="tbtn" id="btnStop" title="Stop" data-ic="stop"></button>
+    <button class="tbtn rec" id="btnRec" title="Record all armed channels (R)" data-ic="record"></button>
+    <button class="tbtn" id="btnFwd" title="Forward 5 seconds (.)" data-ic="fwd"></button>
+    <button class="tbtn loop" id="btnLoop" title="Loop the selected range (L)" data-ic="loop"></button>
     <div class="clock" id="clock">00:00:00.000</div>
   </div>
   <nav class="tabs" id="tabs">
     <button data-view="edit" class="on">Edit</button>
     <button data-view="mixer">Mixer</button>
+    <button data-view="routing">Routing</button>
     <button data-view="master">Master</button>
-    <button data-view="console">WING</button>
+    <button data-view="console" id="tabWing" hidden>WING</button>
     <button data-view="setup">Setup</button>
   </nav>
   <div class="status">
@@ -33,6 +34,7 @@
     <span class="pill cpu" id="cpu" title="Audio engine load">CPU 0%</span>
     <span class="dot" id="audioDot" title="Audio engine"></span>
     <span class="dot" id="netDot" title="Connection"></span>
+    <button class="hbtn" id="btnGuide" title="Guide: what everything does" data-ic="book"></button>
   </div>
 </header>
 
@@ -45,17 +47,17 @@
         <button data-tool="blade" title="Split clips where you click (B)">Blade</button>
         <button data-tool="range" title="Drag a time range across tracks (G)">Range</button>
       </div>
-      <button class="btn" id="btnSplit" title="Split at playhead (S)">Split at playhead</button>
+      <button class="btn" id="btnSplit" title="Split at playhead (S)" data-ic="split">Split</button>
       <button class="btn" id="btnDelete" title="Delete selection (⌫)">Delete</button>
       <label class="chk" title="Deleting a range closes the gap"><input type="checkbox" id="ripple" checked> Ripple</label>
-      <button class="btn" id="btnMarker" title="Add marker (M)">+ Marker</button>
+      <button class="btn" id="btnMarker" title="Add marker (M)" data-ic="marker">Marker</button>
       <span class="sep"></span>
-      <button class="btn icon" id="btnUndo" title="Undo (⌘Z)">↶</button>
-      <button class="btn icon" id="btnRedo" title="Redo (⇧⌘Z)">↷</button>
+      <button class="btn icon" id="btnUndo" title="Undo (⌘Z)" data-ic="undo"></button>
+      <button class="btn icon" id="btnRedo" title="Redo (⇧⌘Z)" data-ic="redo"></button>
       <span class="sep"></span>
-      <button class="btn icon" id="zoomOut" title="Zoom out (-)">−</button>
-      <button class="btn icon" id="zoomFit" title="Zoom to fit (0)">⤢</button>
-      <button class="btn icon" id="zoomIn" title="Zoom in (+)">+</button>
+      <button class="btn icon" id="zoomOut" title="Zoom out (-)" data-ic="zoomout"></button>
+      <button class="btn icon" id="zoomFit" title="Zoom to fit (0)" data-ic="fit"></button>
+      <button class="btn icon" id="zoomIn" title="Zoom in (+)" data-ic="zoomin"></button>
       <select id="trackH" title="Track height"><option value="34">Small</option><option value="54" selected>Medium</option><option value="84">Large</option></select>
       <label class="chk" title="Hide tracks with no audio"><input type="checkbox" id="hideEmpty"> Used tracks only</label>
       <select id="autoView" title="Show and draw automation (A)">
@@ -63,9 +65,13 @@
         <option value="fader">Automation: Volume</option>
         <option value="pan">Automation: Pan</option>
         <option value="mute">Automation: Mute</option>
+        <option value="send0">Automation: Send 1</option>
+        <option value="send1">Automation: Send 2</option>
+        <option value="send2">Automation: Send 3</option>
+        <option value="send3">Automation: Send 4</option>
       </select>
       <span class="grow"></span>
-      <button class="btn" id="btnImport">Import audio</button>
+      <button class="btn" id="btnImport" data-ic="import" title="Import audio (or drag files onto the timeline)">Import</button>
       <button class="btn accent" id="btnExport">Export…</button>
       <input type="file" id="importFile" accept="audio/*,.wav,.aif,.aiff,.flac,.mp3" hidden multiple>
     </div>
@@ -88,15 +94,26 @@
     <div class="toolbar">
       <div class="seg" id="mixBank"></div>
       <span class="sep"></span>
-      <button class="btn" id="btnScenes">Scenes…</button>
-      <label class="chk"><input type="checkbox" id="showSends" checked> Sends</label>
+      <div class="scenebar" id="sceneBar"></div>
+      <button class="btn" id="btnScenes" data-ic="scene">Scenes</button>
       <span class="grow"></span>
       <span class="hint" id="soloHint"></span>
+      <label class="chk"><input type="checkbox" id="showSends" checked> Sends</label>
     </div>
     <div class="mixer">
       <div class="strips" id="strips"></div>
       <div class="strips fixed" id="mstrips"></div>
     </div>
+  </section>
+
+  <!-- ======================= ROUTING ======================= -->
+  <section id="view-routing" class="view">
+    <div class="routing" id="routing"></div>
+  </section>
+
+  <!-- ======================= GUIDE ======================= -->
+  <section id="view-guide" class="view">
+    <div class="guide" id="guide"></div>
   </section>
 
   <!-- ======================= MASTER ======================= -->
@@ -148,10 +165,13 @@
 <div class="toast" id="toast" hidden></div>
 
 <script src="/static/widgets.js"></script>
+<script src="/static/icons.js"></script>
 <script src="/static/app.js"></script>
 <script src="/static/timeline.js"></script>
 <script src="/static/mixer.js"></script>
 <script src="/static/master.js"></script>
+<script src="/static/routing.js"></script>
+<script src="/static/guide.js"></script>
 <script src="/static/console.js"></script>
 <script src="/static/setup.js"></script>
 </body>

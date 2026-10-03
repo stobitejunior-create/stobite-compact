@@ -9,15 +9,33 @@
 
   const clips = () => S.session?.clips || [];
   const nch = () => S.session?.nch || 48;
-  const chan = i => S.mixer?.channels[i] || { name: 'Ch ' + (i + 1), color: '#666' };
-  let vis = [];
+  // rows are channel numbers (in mixer order) plus, in automation view, 'bus:i' / 'fx:i' / 'master' lanes
+  const isAux = t => typeof t === 'string';
+  function chan(t) {
+    if (isAux(t)) {
+      if (t === 'master') return { name: 'Master', color: '#e8e9eb', aux: true, fader: S.mixer.master.fader };
+      const [k, i] = t.split(':'), o = k === 'bus' ? S.mixer.buses[+i] : S.mixer.fx[+i];
+      return { name: (k === 'bus' ? 'Bus · ' : 'FX · ') + (o?.name || t), color: o?.color || '#5b8def', aux: true, fader: k === 'bus' ? o?.fader : o?.ret, mute: o?.mute, sends: o?.sends };
+    }
+    return S.mixer?.channels[t] || { name: 'Ch ' + (t + 1), color: '#666' };
+  }
+  let vis = [], chanRows = 0;
   function computeVisible() {
+    const order = S.mixer?.order || [...Array(nch()).keys()];
     if ($('#hideEmpty').checked) {
       const used = new Set(clips().map(c => c.track));
       if (S.tr.recording) S.session.armed.forEach((a, i) => a && used.add(i));
-      vis = [...used].sort((a, b) => a - b);
-      if (!vis.length) vis = [...Array(nch()).keys()];
-    } else vis = [...Array(nch()).keys()];
+      vis = order.filter(c => used.has(c));
+      if (!vis.length) vis = [...order];
+    } else vis = [...order];
+    chanRows = vis.length;
+    if (T.autoView && S.mixer) {
+      const aux = [];
+      if (['fader', 'mute', 'send0', 'send1', 'send2', 'send3'].includes(T.autoView)) S.mixer.buses.forEach((b, i) => aux.push('bus:' + i));
+      if (['fader', 'mute'].includes(T.autoView)) S.mixer.fx.forEach((f, i) => aux.push('fx:' + i));
+      if (T.autoView === 'fader') aux.push('master');
+      vis = vis.concat(aux);
+    }
   }
   const rowOf = track => vis.indexOf(track);
   const xOf = s => (s - T.x0) / T.spp;
@@ -44,15 +62,30 @@
     heads.innerHTML = '';
     headEls = vis.map((t, r) => {
       const ch = chan(t);
+      if (ch.aux) {
+        const target = t === 'master' ? 'master' : t;
+        const el = h('div', { class: 'thead aux', style: `top:${r * T.th}px;height:${T.th}px` },
+          h('div', { class: 'col', style: `background:${ch.color}` }), icon(t === 'master' ? 'broadcast' : t.startsWith('fx') ? 'fx' : 'bus', 15),
+          h('span', { class: 'tname', onclick: () => openEditor(t === 'master' ? 'master' : t.startsWith('fx') ? t : 'bus:' + S.mixer.buses[+t.split(':')[1]].id) }, ch.name), autoModeButton(target));
+        heads.append(el);
+        return { el, mi: null, t };
+      }
       const name = h('input', { class: 'tname', value: ch.name, onchange: e => setParam(['channels', t, 'name'], e.target.value) });
       const arm = h('button', { class: 'tog r' + (S.session.armed[t] ? ' on' : ''), title: 'Arm for recording', onclick: () => { const a = [...S.session.armed]; a[t] = !a[t]; send({ t: 'edit', op: 'arm', args: { armed: a } }); } }, 'R');
       const mute = h('button', { class: 'tog m' + (ch.mute ? ' on' : ''), title: 'Mute', onclick: () => setParam(['channels', t, 'mute'], !chan(t).mute) }, 'M');
       const solo = h('button', { class: 'tog s' + (ch.solo ? ' on' : ''), title: 'Solo', onclick: () => setParam(['channels', t, 'solo'], !chan(t).solo) }, 'S');
       const mi = h('i');
       const auto = autoModeButton(String(t));
-      const el = h('div', { class: 'thead', style: `top:${r * T.th}px;height:${T.th}px` },
-        h('div', { class: 'col', style: `background:${ch.color}` }), h('span', { class: 'tnum' }, t + 1), name, arm, mute, solo, auto, h('div', { class: 'hm' }, mi));
+      const ic = h('button', { class: 'ticon', title: 'What is on this channel?', onclick: () => pickFor(t) }, icon(ch.icon || 'input', 16));
+      const el = h('div', { class: 'thead', draggable: 'true', style: `top:${r * T.th}px;height:${T.th}px` },
+        h('div', { class: 'col', style: `background:${ch.color}` }), h('span', { class: 'tnum' }, t + 1), ic, name, arm, mute, solo, auto, h('div', { class: 'hm' }, mi));
       el.ondblclick = e => { if (e.target === el) openEditor(t); };
+      // drag a track header onto another to reorder (same order as the mixer)
+      el.addEventListener('dragstart', e => { if (e.target.closest('input')) return e.preventDefault(); e.dataTransfer.setData('text/x-track', String(t)); el.classList.add('dragging'); });
+      el.addEventListener('dragend', () => el.classList.remove('dragging'));
+      el.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('text/x-track')) { e.preventDefault(); el.classList.add('dropto'); } });
+      el.addEventListener('dragleave', () => el.classList.remove('dropto'));
+      el.addEventListener('drop', e => { el.classList.remove('dropto'); const from = +e.dataTransfer.getData('text/x-track'); if (!isNaN(from) && from !== t && e.dataTransfer.types.includes('text/x-track')) { e.preventDefault(); moveChannel(from, t); } });
       heads.append(el);
       return { el, mi, t };
     });
@@ -61,12 +94,13 @@
   }
   on('session', () => { if (!T.drag || T.drag.type !== 'auto') buildHeads(); });
   on('mixer', buildHeads);
-  on('set', p => { if (p[0] === 'channels' && ['name', 'mute', 'solo', 'color'].includes(p[2])) buildHeads(); });
+  on('set', p => { if ((p[0] === 'channels' && ['name', 'mute', 'solo', 'color', 'icon'].includes(p[2])) || p[0] === 'order') buildHeads(); });
+  on('order', buildHeads);
   $('#hideEmpty').onchange = () => { T.y0 = 0; buildHeads(); };
   $('#trackH').onchange = e => { T.th = +e.target.value; buildHeads(); };
   $('#armAll').onclick = () => { const any = S.session.armed.some(Boolean); send({ t: 'edit', op: 'arm', args: { armed: S.session.armed.map(() => !any) } }); };
   on('meters', m => {
-    for (const he of headEls) he.mi.style.height = (meterPos((m.pl && !m.rc ? m.p : m.i)[he.t] / 1000) * 100) + '%';
+    for (const he of headEls) if (he.mi) he.mi.style.height = (meterPos((m.pl && !m.rc ? m.p : m.i)[he.t] / 1000) * 100) + '%';
     phV = m.ph; phT = performance.now();
     if (m.pl || m.rc) invalidate();
   });
@@ -87,7 +121,7 @@
     let start = c.start, len = c.length, track = c.track, fin = c.fin || 0, fout = c.fout || 0;
     const d = T.drag;
     if (d && d.ids && d.ids.includes(c.id)) {
-      if (d.type === 'move') { start = Math.max(0, start + d.ds); const r = clamp(rowOf(track) + d.dr, 0, vis.length - 1); track = vis[r]; }
+      if (d.type === 'move') { start = Math.max(0, start + d.ds); const r = clamp(rowOf(track) + d.dr, 0, chanRows - 1); track = vis[r]; }
       else if (d.type === 'trimL') { const ns = clamp(start + d.ds, start - c.offset, start + len - 64); len -= ns - start; start = ns; }
       else if (d.type === 'trimR') { len = clamp(len + d.ds, 64, (c.fileLength || c.offset + len) - c.offset); }
       else if (d.type === 'fin') fin = clamp(fin + d.ds, 0, len);
@@ -215,12 +249,28 @@
     }
   }
   // ---------------------------------------------------------- automation
-  const autoKey = t => `ch:${t}:${T.autoView}`;
-  const toN = v => T.autoView === 'fader' ? dbToPos(v) : T.autoView === 'pan' ? (v + 1) / 2 : v;
-  const fromN = n => { n = clamp(n, 0, 1); return T.autoView === 'fader' ? Math.round(posToDb(n) * 10) / 10 : T.autoView === 'pan' ? Math.round((n * 2 - 1) * 100) / 100 : (n > 0.5 ? 1 : 0); };
+  const isSend = () => T.autoView.startsWith('send');
+  function autoKey(t) {
+    const v = T.autoView;
+    if (t === 'master') return 'master:fader';
+    if (isAux(t)) {
+      const [k, i] = t.split(':');
+      if (k === 'bus') return v === 'mute' ? `p:buses/${i}/mute` : isSend() ? `p:buses/${i}/sends/${v.slice(4)}` : `p:buses/${i}/fader`;
+      return v === 'mute' ? `p:fx/${i}/mute` : `p:fx/${i}/ret`;
+    }
+    if (isSend()) return `p:channels/${t}/sends/${v.slice(4)}`;
+    return `ch:${t}:${v}`;
+  }
+  const kindOf = () => (T.autoView === 'pan' ? 'pan' : T.autoView === 'mute' ? 'mute' : 'db');
+  const toN = v => kindOf() === 'db' ? dbToPos(v) : kindOf() === 'pan' ? (v + 1) / 2 : v;
+  const fromN = n => { n = clamp(n, 0, 1); return kindOf() === 'db' ? Math.round(posToDb(n) * 10) / 10 : kindOf() === 'pan' ? Math.round((n * 2 - 1) * 100) / 100 : (n > 0.5 ? 1 : 0); };
   const laneY = (r, n) => yOfRow(r) + 5 + (1 - n) * (T.th - 10);
   const laneN = (r, y) => 1 - (y - yOfRow(r) - 5) / (T.th - 10);
-  const curValue = t => { const ch = chan(t); return T.autoView === 'fader' ? ch.fader : T.autoView === 'pan' ? ch.pan : (ch.mute ? 1 : 0); };
+  const curValue = t => {
+    const ch = chan(t);
+    if (isSend()) return ch.sends?.[+T.autoView.slice(4)] ?? -90;
+    return T.autoView === 'fader' ? (ch.fader ?? 0) : T.autoView === 'pan' ? (ch.pan ?? 0) : (ch.mute ? 1 : 0);
+  };
   function lanePoints(t) {
     const d = T.drag;
     if (d && d.type === 'auto' && d.track === t) return d.points;
@@ -236,7 +286,7 @@
         const y = laneY(r, toN(curValue(t))); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.setLineDash([]);
         continue;
       }
-      const step = T.autoView === 'mute';
+      const step = kindOf() === 'mute';
       g.beginPath();
       let px = 0, py = laneY(r, toN(pts[0][1]));
       g.moveTo(0, py);
@@ -264,7 +314,7 @@
     if (pts.length) S.session.automation[key] = pts.map(p => [...p]); else delete S.session.automation[key];
     send({ t: 'edit', op: 'auto', args: { key, points: pts } });
   }
-  $('#autoView').onchange = e => { T.autoView = e.target.value; invalidate(); };
+  $('#autoView').onchange = e => { T.autoView = e.target.value; buildHeads(); };
 
   function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
 
@@ -322,8 +372,8 @@
       tr('locate', { pos: sOf(x) });
     } else {
       const ht = hit(x, y);
-      if (ht) T.lastTrack = ht.track;
-      if (T.autoView && ht) {
+      if (ht && !isAux(ht.track)) T.lastTrack = ht.track;
+      if (T.autoView && ht && (!isAux(ht.track) || true)) {
         const t = ht.track, r = ht.row;
         const pts = (S.session.automation?.[autoKey(t)] || []).map(p => [...p]);
         let i = autoHit(t, r, x, y);
@@ -378,7 +428,7 @@
       } else if (d.type !== 'scrub' && d.moved) {
         const c = d.clip;
         if (d.type === 'move') {
-          const newRow = clamp(rowOf(c.track) + d.dr, 0, vis.length - 1);
+          const newRow = clamp(rowOf(c.track) + d.dr, 0, chanRows - 1);
           send({ t: 'edit', op: 'move', args: { ids: d.ids, delta: d.ds, trackDelta: vis[newRow] - c.track } });
         } else if (d.type === 'trimL') send({ t: 'edit', op: 'trim', args: { id: c.id, newStart: c.start + d.ds } });
         else if (d.type === 'trimR') send({ t: 'edit', op: 'trim', args: { id: c.id, newEnd: c.start + c.length + d.ds } });
@@ -483,7 +533,7 @@
     else if (k === '0') fit();
     else if (k === 'a' && mod) { e.preventDefault(); clips().forEach(c => T.sel.add(c.id)); renderClipbar(); invalidate(); }
     else if (k === 'f') { T.follow = !T.follow; toast('Follow playhead ' + (T.follow ? 'on' : 'off')); }
-    else if (k === 'a' && !mod) { const o = ['', 'fader', 'pan', 'mute']; T.autoView = o[(o.indexOf(T.autoView) + 1) % o.length]; $('#autoView').value = T.autoView; invalidate(); }
+    else if (k === 'a' && !mod) { const o = ['', 'fader', 'pan', 'mute']; T.autoView = o[(o.indexOf(T.autoView) + 1) % o.length]; $('#autoView').value = T.autoView; buildHeads(); }
     else if (k === 'arrowleft' || k === 'arrowright') {
       const ms = S.session.markers.map(m => m.pos).concat([0, S.session.length]).sort((a, b) => a - b), p = playheadNow();
       const t = k === 'arrowleft' ? ms.filter(m => m < p - sr() * 0.2).pop() : ms.find(m => m > p + 10);
@@ -538,6 +588,29 @@
     send({ t: 'edit', op: 'loop', args: { on: !lp.on } });
   };
   on('session', () => { $('#btnLoop').classList.toggle('on', !!S.session.loop?.on); $$('.thead .tog.auto').forEach(b => b.dispatchEvent(new Event('repaint'))); });
+
+  // ---------------------------------------------------------- drag & drop audio files
+  const AUDIO_RE = /\.(wav|wave|aif|aiff|flac|mp3|m4a|ogg|caf)$/i;
+  wrap.addEventListener('dragover', e => { if (e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; wrap.classList.add('dropping'); } });
+  wrap.addEventListener('dragleave', e => { if (e.target === wrap || e.target === canvas) wrap.classList.remove('dropping'); });
+  wrap.addEventListener('drop', async e => {
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault(); wrap.classList.remove('dropping');
+    const rect = canvas.getBoundingClientRect();
+    const r = clamp(rowAt(e.clientY - rect.top), 0, Math.max(chanRows - 1, 0));
+    let track = vis[r] ?? 0;
+    const start = sOf(e.clientX - rect.left);
+    const files = [...e.dataTransfer.files].filter(f => AUDIO_RE.test(f.name) || f.type.startsWith('audio/'));
+    if (!files.length) return toast('Drop audio files (WAV, AIFF, FLAC, MP3)', true);
+    for (const f of files) {
+      const fd = new FormData(); fd.append('file', f, f.name);
+      toast('Importing ' + f.name + '…');
+      try { await api('import', fd, `?track=${track}&start=${start}`); } catch (err) { toast(f.name + ': ' + err.message, true); continue; }
+      const next = vis[Math.min(vis.indexOf(track) + 1, chanRows - 1)];
+      track = next ?? track;
+    }
+    toast('Imported ' + files.length + ' file' + (files.length > 1 ? 's' : ''));
+  });
 
   // ---------------------------------------------------------- import / export
   $('#btnImport').onclick = () => $('#importFile').click();

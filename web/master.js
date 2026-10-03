@@ -1,7 +1,8 @@
 // Mastering: loudness (LUFS), spectrum, correlation, and the master chain.
 (() => {
-  const TARGETS = [[-14, 'Streaming / YouTube / livestream  −14'], [-16, 'Apple Music / podcasts  −16'], [-18, 'Gentle / dynamic  −18'], [-23, 'Broadcast (EBU R128)  −23']];
+  const TARGETS = [[-10, 'Energetic livestream  −10'], [-12, 'Worship livestream  −12'], [-14, 'Streaming / YouTube  −14'], [-16, 'Apple Music / podcasts  −16'], [-18, 'Gentle / dynamic  −18'], [-23, 'Broadcast (EBU R128)  −23']];
   const hist = []; // short-term LUFS history (10 per second)
+  const corrHist = [];
   let built = false, specCanvas, histCanvas, spec = null, specHold = null, els = {}, ctl = new Map();
   const M = () => S.mixer.master;
   const lufsTxt = v => v <= -70 ? '—' : v.toFixed(1);
@@ -24,6 +25,10 @@
         h('div', { class: 'lu' }, h('span', {}, 'Momentary'), els.mom, h('small', {}, 'LUFS · 0.4 s')),
         h('div', { class: 'lu' }, h('span', {}, 'Short-term'), els.short, h('small', {}, 'LUFS · 3 s')),
         h('div', { class: 'lu main' }, h('span', {}, 'Integrated'), els.int, els.delta)),
+      h('div', { class: 'lu-row small' },
+        h('div', { class: 'lu' }, h('span', {}, 'True peak (max)'), els.tp = h('div', { class: 'lu-num sm' }, '—'), h('small', {}, 'dBTP · keep ≤ ' + (M().tp_max ?? -1))),
+        h('div', { class: 'lu' }, h('span', {}, 'Loudness range'), els.lra = h('div', { class: 'lu-num sm' }, '—'), h('small', {}, 'LU · 6–12 feels dynamic')),
+        h('div', { class: 'lu' }, h('span', {}, 'RMS'), els.rms = h('div', { class: 'lu-num sm' }, '—'), h('small', {}, 'dBFS'))),
       histCanvas));
 
     // meters card
@@ -33,7 +38,10 @@
     mL.el.classList.add('wide'); mR.el.classList.add('wide');
     box.append(h('div', { class: 'card meters-card' }, h('h3', {}, 'Output'),
       h('div', { class: 'big-meters' }, h('div', { class: 'bm' }, mL.el, els.pkL, h('small', {}, 'L')), h('div', { class: 'bm' }, mR.el, els.pkR, h('small', {}, 'R'))),
-      h('div', { class: 'corr-wrap' }, h('div', { class: 'corr-lbl' }, h('small', {}, '−1'), h('small', {}, 'Phase correlation'), h('small', {}, '+1')), h('div', { class: 'corr' }, els.corr), els.corrTxt)));
+      h('div', { class: 'corr-wrap' }, h('div', { class: 'corr-lbl' }, h('small', {}, '−1'), h('small', {}, 'Phase correlation'), h('small', {}, '+1')), h('div', { class: 'corr' }, els.corr), els.corrTxt),
+      els.monoWarn = h('div', { class: 'warnbox', hidden: true }, 'Mono problem: parts of the mix cancel on mono phone speakers. Reduce width or check for a channel with its phase flipped.'),
+      h('div', { class: 'monmode' }, h('small', {}, 'Listen check'), h('div', { class: 'seg' }, ...[['stereo', 'Stereo'], ['mono', 'Mono'], ['side', 'Side'], ['left', 'L'], ['right', 'R']].map(([v, l]) =>
+        h('button', { class: (S.mixer.monitor || 'stereo') === v ? 'on' : '', onclick: e => { setParam(['monitor'], v); $$('.monmode .seg button').forEach(b => b.classList.toggle('on', b === e.currentTarget)); if (v !== 'stereo' && !(S.info?.cfg?.mon_l >= 0)) toast('Heads up: no separate monitor outputs set, so this also affects the stream output', true); } }, l))))));
 
     // spectrum card
     specCanvas = h('canvas', { class: 'spec' });
@@ -45,7 +53,7 @@
     els.gr = h('i'); els.lim = h('i');
     const chain = h('div', { class: 'chain' },
       h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '1'), 'Tone EQ', T(['master', 'eq', 'on'], 'ON')),
-        h('div', { class: 'eqthumb big', onclick: () => openEditor('master') }, eqThumb), h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Open EQ')),
+        h('div', { class: 'eqthumb big', onclick: () => openEditor('master') }, eqThumb), h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Open master chain')),
       h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '2'), 'Glue compressor', T(['master', 'comp', 'on'], 'ON')),
         h('div', { class: 'knobs' }, K(['master', 'comp', 'thr'], { label: 'Threshold', min: -40, max: 0, def: -12, format: fmt.db, size: 40, big: true }),
           K(['master', 'comp', 'ratio'], { label: 'Ratio', min: 1, max: 10, log: true, def: 2, format: fmt.ratio, size: 40, big: true }),
@@ -53,12 +61,16 @@
           K(['master', 'comp', 'rel'], { label: 'Release', min: 50, max: 1500, log: true, def: 200, format: fmt.ms, size: 32 }),
           K(['master', 'comp', 'makeup'], { label: 'Makeup', min: 0, max: 12, def: 0, format: fmt.db, size: 32 })),
         h('div', { class: 'grbar', title: 'Gain reduction' }, els.gr)),
-      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '3'), 'Colour & width'),
-        h('div', { class: 'knobs' }, K(['master', 'drive'], { label: 'Saturation', min: 0, max: 18, def: 0, format: v => v < 0.1 ? 'Off' : '+' + v.toFixed(1) + 'dB', size: 44, big: true, color: '#ffb366' }),
-          K(['master', 'width'], { label: 'Stereo width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 44, big: true, color: '#3aa0ff' }))),
+      h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '3'), 'Colour & width', T(['master', 'sat', 'on'], 'SAT')),
+        h('div', { class: 'knobs' }, K(['master', 'sat', 'drive'], { label: 'Saturation', min: 0, max: 12, def: 1.5, format: v => '+' + v.toFixed(1) + 'dB', size: 40, big: true, color: '#ffb366' }),
+          K(['master', 'width'], { label: 'Width', min: 0, max: 200, def: 100, format: v => Math.round(v) + '%', size: 40, big: true, color: '#3aa0ff' }),
+          K(['master', 'balance'], { label: 'Balance', min: -1, max: 1, def: 0, format: fmt.pan, bipolar: true, size: 32 })),
+        h('div', { class: 'frow' }, T(['master', 'mbc', 'on'], 'Multiband'), T(['master', 'dyneq', 'on'], 'Dynamic EQ'))),
       h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '4'), 'Limiter', T(['master', 'limiter', 'on'], 'ON')),
-        h('div', { class: 'knobs' }, K(['master', 'limiter', 'ceiling'], { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 44, big: true }),
-          K(['master', 'fader'], { label: 'Output', min: -30, max: 12, def: 0, format: fmt.db, size: 44, big: true })),
+        h('div', { class: 'knobs' }, K(['master', 'limiter', 'threshold'], { label: 'Threshold', min: -12, max: 0, def: 0, format: fmt.db, size: 40, big: true }),
+          K(['master', 'limiter', 'ceiling'], { label: 'Ceiling', min: -6, max: 0, def: -1, format: fmt.db, size: 40, big: true }),
+          K(['master', 'fader'], { label: 'Output', min: -30, max: 12, def: 0, format: fmt.db, size: 32 })),
+        h('div', { class: 'frow' }, T(['master', 'limiter', 'truepeak'], 'True peak')),
         h('div', { class: 'grbar', title: 'Limiter gain reduction' }, els.lim)),
     );
     box.append(h('div', { class: 'card chain-card' }, h('div', { class: 'card-head' }, h('h3', {}, 'Mastering chain'), h('span', { class: 'grow' }),
@@ -74,7 +86,7 @@
     const avg = st.reduce((a, b) => a + b, 0) / st.length;
     const need = M().target - avg;
     if (!M().comp.on) { setParam(['master', 'comp'], { ...M().comp, on: true, thr: -14, ratio: 2, att: 30, rel: 200, knee: 6, makeup: 0 }); }
-    setParam(['master', 'limiter'], { on: true, ceiling: -1 });
+    setParam(['master', 'limiter'], { ...M().limiter, on: true, ceiling: -1, truepeak: true });
     const out = clamp(Math.round((M().fader + need) * 10) / 10, -30, 12);
     setParam(['master', 'fader'], out);
     build();
@@ -134,7 +146,13 @@
       els.corr.style.left = cv < 0 ? `${50 + cv * 50}%` : '50%'; els.corr.style.width = `${Math.abs(cv) * 50}%`;
       els.corr.style.background = cv < 0 ? 'var(--red)' : 'var(--green)';
       els.corrTxt.textContent = cv.toFixed(2);
+      corrHist.push(cv); if (corrHist.length > 60) corrHist.shift();
+      const avg = corrHist.reduce((a, b) => a + b, 0) / corrHist.length;
+      els.monoWarn.hidden = !(corrHist.length > 20 && avg < -0.05 && m.lu[1] > -50);
     }
+    if (m.tpx != null && els.tp) { els.tp.textContent = m.tpx <= -100 ? '—' : m.tpx.toFixed(1); els.tp.style.color = m.tpx > (M().tp_max ?? -1) ? 'var(--red)' : ''; }
+    if (m.lra != null && els.lra) els.lra.textContent = m.lra ? m.lra.toFixed(1) : '—';
+    if (m.mr != null && els.rms) els.rms.textContent = m.mr > 0 ? (20 * Math.log10(m.mr / 1000)).toFixed(1) : '—';
     if (m.li != null) {
       els.int.textContent = lufsTxt(m.li);
       if (m.li > -70) {

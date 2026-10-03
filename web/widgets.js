@@ -213,11 +213,17 @@ function biquadMag(c, f, fs) {
   const dr = 1 + c[3] * cw + c[4] * c2, di = -(c[3] * sw + c[4] * s2);
   return Math.sqrt((nr * nr + ni * ni) / (dr * dr + di * di));
 }
+const BW_QS = { 12: [0.7071], 24: [0.5412, 1.3066], 48: [0.5098, 0.6013, 0.9, 2.5629] };
+const cutSecs = (kind, f, slope, fs) => (BW_QS[slope] || BW_QS[24]).map(q => biquad(kind, f, 0, q, fs));
 function stripSections(s, fs) {
   const out = [];
-  if (s.hpf && s.hpf.on) { if ((s.hpf.slope || 24) >= 24) { out.push(biquad('hp', s.hpf.freq, 0, 0.5412, fs), biquad('hp', s.hpf.freq, 0, 1.3066, fs)); } else out.push(biquad('hp', s.hpf.freq, 0, 0.7071, fs)); }
-  if (s.lpf && s.lpf.on) out.push(biquad('lp', s.lpf.freq, 0, 0.5412, fs), biquad('lp', s.lpf.freq, 0, 1.3066, fs));
-  if (s.eq && s.eq.on !== false) for (const b of s.eq.bands) if (b.on !== false && (Math.abs(b.gain) > 0.01 || b.type === 'notch')) out.push(biquad(b.type, b.freq, b.gain, b.q, fs));
+  if (s.hpf && s.hpf.on) out.push(...cutSecs('hp', s.hpf.freq, s.hpf.slope || 24, fs));
+  if (s.lpf && s.lpf.on) out.push(...cutSecs('lp', s.lpf.freq, s.lpf.slope || 12, fs));
+  if (s.eq && s.eq.on !== false) for (const b of s.eq.bands) {
+    if (b.on === false) continue;
+    if (b.type === 'hp' || b.type === 'lp') out.push(...cutSecs(b.type, b.freq, b.slope || 12, fs));
+    else if (Math.abs(b.gain) > 0.01 || b.type === 'notch') out.push(biquad(b.type, b.freq, b.gain, b.q, fs));
+  }
   return out.filter(Boolean);
 }
 function responseDb(secs, f, fs) { let m = 1; for (const c of secs) m *= biquadMag(c, f, fs); return 20 * Math.log10(Math.max(m, 1e-6)); }
@@ -256,7 +262,7 @@ function drawEqCurve(canvas, strip, fs, opts = {}) {
   g.lineTo(W, gy(0)); g.lineTo(0, gy(0)); g.closePath(); g.fillStyle = on ? 'rgba(247,107,21,.12)' : 'rgba(255,255,255,.04)'; g.fill();
   if (opts.nodes) {
     strip.eq.bands.forEach((b, i) => {
-      const x = fx(b.freq), y = gy(b.type === 'notch' ? 0 : b.gain);
+      const x = fx(b.freq), y = gy(['notch', 'hp', 'lp'].includes(b.type) ? 0 : b.gain);
       g.beginPath(); g.arc(x, y, i === opts.active ? 9 : 7, 0, Math.PI * 2);
       g.fillStyle = b.on === false ? '#444' : BAND_COLORS[i]; g.fill();
       g.fillStyle = '#000'; g.font = 'bold 10px system-ui'; g.textAlign = 'center'; g.fillText(i + 1, x, y + 3.5); g.textAlign = 'start';

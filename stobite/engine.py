@@ -15,12 +15,16 @@ if sys.platform == "win32":
 import sounddevice as sd
 
 from .mixer import Mixer, Insert
+from .cables import CableIO
 from .session import Session, Reader, Recorder, home_dir, list_sessions
 
 DEFAULT_CFG = {
     "input": None, "output": None, "sr": 48000, "block": 256, "nch": 48,
     "main_l": 0, "main_r": 1, "direct_outs": False, "direct_offset": 0,
     "monitor_live": True, "session": None, "pin": "",
+    "mon_l": -1, "mon_r": -1,              # optional separate monitor (headphone) outputs
+    "cable_out": None, "cable_in": None,    # system loopback device(s) for the virtual cables
+    "show_wing": False,
 }
 
 
@@ -47,6 +51,62 @@ def list_devices():
                     "sr": d["default_samplerate"],
                     "wing": any(k in d["name"].upper() for k in ("WING", "BEHRINGER"))})
     return out
+
+
+def find_named(name, kind):
+    """Exact device lookup (no fallback) for optional devices like the cable loopback."""
+    if not name:
+        return None
+    key = "ins" if kind == "input" else "outs"
+    for d in list_devices():
+        if (f'{d["name"]} ({d["api"]})' == name or d["name"] == name) and d[key] > 0:
+            return d["id"]
+    return None
+
+
+def monitor_mix(x, mode):
+    """Engineer's checks: mono compatibility, mid only, side only, left, right."""
+    if mode == "mono":
+        m = (x[:, 0] + x[:, 1]) * 0.5
+        return np.stack([m, m], axis=1)
+    if mode == "mid":
+        m = (x[:, 0] + x[:, 1]) * 0.5
+        return np.stack([m, m], axis=1)
+    if mode == "side":
+        sd_ = (x[:, 0] - x[:, 1]) * 0.5
+        return np.stack([sd_, -sd_], axis=1)
+    if mode == "left":
+        return np.stack([x[:, 0], x[:, 0]], axis=1)
+    if mode == "right":
+        return np.stack([x[:, 1], x[:, 1]], axis=1)
+    return x
+
+
+AUTOMATABLE = {
+    ("channels", "sends"), ("buses", "fader"), ("buses", "mute"), ("buses", "sends"), ("buses", "duck"),
+    ("fx", "ret"), ("fx", "mute"), ("fx", "duck"), ("master", "width"), ("ins",),
+}
+
+
+def automatable(path):
+    if path[0] == "ins":
+        return True
+    return len(path) >= 3 and (path[0], path[2]) in AUTOMATABLE or (len(path) == 2 and path == ["master", "width"])
+
+
+def auto_target(path):
+    """Which automation-mode button governs this parameter."""
+    p0 = str(path[0])
+    if p0 == "channels":
+        return str(path[1])
+    if p0 == "buses":
+        return f"bus:{path[1]}"
+    if p0 == "fx":
+        return f"fx:{path[1]}"
+    if p0 == "ins":
+        t = str(path[1])
+        return "master" if t == "master" else (t if not t.startswith("bus:") else t)
+    return "master"
 
 
 def find_device(name, kind):
@@ -174,6 +234,8 @@ class Engine:
         self.listeners = []
         self.export_job = None
         self.dirty = False
+        self.cables = CableIO()
+        self.auto_values = {}
         self.touching = {}     # automation key -> (last write pos, wall time)
         self.last_auto = None
         name = self.cfg.get("session")
@@ -182,6 +244,7 @@ class Engine:
         except Exception:
             self.new_session(time.strftime("Session %Y-%m-%d"))
         threading.Thread(target=self._autosave, daemon=True).start()
+        threading.Thread(target=self._auto_loop, daemon=True).start()
 
     # ------------------------------------------------------------- config
     def save_cfg(self):
@@ -221,10 +284,16 @@ class Engine:
             self.in_name = sd.query_devices(ind)["name"] if ind is not None else "None"
             self.out_name = sd.query_devices(outd)["name"]
             self.status, self.error = "running", ""
+            self.start_cables()
         except Exception as ex:
             self.stream = None
             self.status, self.error = "error", str(ex)
         self.emit("status")
+
+    def start_cables(self):
+        co = find_named(self.cfg.get("cable_out"), "output")
+        ci = find_named(self.cfg.get("cable_in"), "input")
+        self.cables.start(co, ci, self.sr, int(self.cfg["block"]))
 
     def stop_audio(self):
         if self.stream is not None:
@@ -242,28 +311,29 @@ class Engine:
             if status:
                 self.xruns += 1
             nch = self.nch
-            if indata is not None:
-                live = np.zeros((frames, nch), np.float32)
-                w = min(nch, indata.shape[1])
-                live[:, :w] = indata[:, :w]
-            else:
-                live = None
-            if self.recording and live is not None:
-                self.recorder.push(live)
+            mixer = self.mixer
+            cable_in = self.cables.exchange(mixer.cable_out, frames)
+            hw = indata if indata is not None else np.zeros((frames, 0), np.float32)
+            # each channel's chosen input, exactly as it arrived: no trim, EQ, dynamics or fader
+            raw = mixer.route_inputs(hw, cable_in)
+            if self.recording:
+                self.recorder.push(raw)
             if self.playing and not self.recording:
                 src = self.feeder.pull(frames, nch)
-            elif live is not None and (self.cfg["monitor_live"] or self.recording):
-                src = live
+                live_mask = self.live_tracks()
+                if live_mask is not None:  # channels with no recorded audio stay live (mics, cable returns)
+                    src[:, live_mask] = raw[:, live_mask]
+            elif self.cfg["monitor_live"] or self.recording:
+                src = raw.copy()
             else:
                 src = np.zeros((frames, nch), np.float32)
-                if live is not None:
-                    np.maximum(self.mixer.m_in, np.abs(live).max(axis=0), out=self.mixer.m_in)
+                np.maximum(mixer.m_in, np.abs(raw).max(axis=0), out=mixer.m_in)
             direct = np.zeros((frames, nch), np.float32) if self.cfg["direct_outs"] else None
             if self.playing and not self.recording and self.session is not None:
-                self.mixer.auto = self.last_auto = self.auto_for(self.session, self.playhead, self.touched())
+                mixer.auto = self.last_auto = self.auto_for(self.session, self.playhead, self.touched())
             else:
-                self.mixer.auto = None
-            master = self.mixer.process(src, direct)
+                mixer.auto = None
+            master = mixer.process(src, direct)
             outdata.fill(0)
             outs = outdata.shape[1]
             if direct is not None:
@@ -275,6 +345,15 @@ class Engine:
                 outdata[:, l] = master[:, 0]
             if 0 <= r < outs:
                 outdata[:, r] = master[:, 1]
+            ml, mr = int(self.cfg.get("mon_l", -1)), int(self.cfg.get("mon_r", -1))
+            mode = mixer.state.get("monitor", "stereo")
+            if (0 <= ml < outs and 0 <= mr < outs) or mode != "stereo":
+                mon = monitor_mix(master, mode)
+                if 0 <= ml < outs and 0 <= mr < outs:
+                    outdata[:, ml], outdata[:, mr] = mon[:, 0], mon[:, 1]
+                elif mode != "stereo" and 0 <= l < outs and 0 <= r < outs:
+                    # no separate monitor outs: the check applies to the main outs (and so the stream)
+                    outdata[:, l], outdata[:, r] = mon[:, 0], mon[:, 1]
             if self.playing or self.recording:
                 lp = self.session.loop if self.session else None
                 before = self.playhead
@@ -296,7 +375,11 @@ class Engine:
             return None
         out = {"fader": {}, "pan": {}, "mute": {}, "master": None}
         for key in lanes:
+            if not (key.startswith("ch:") or key == "master:fader"):
+                continue  # buses, FX, sends, plug-ins: applied by the automation thread
             parts = key.split(":")
+            if parts[0] == "ch" and not parts[1].isdigit():
+                continue
             target = parts[1] if parts[0] == "ch" else "master"
             if s.automode.get(target, "read") == "off" or key in skip:
                 continue
@@ -306,6 +389,58 @@ class Engine:
             elif int(parts[1]) < s.nch:
                 out[parts[2]][int(parts[1])] = v
         return out
+
+    AUTO_FAST = ("fader", "pan", "mute")
+
+    def live_tracks(self):
+        s = self.session
+        if s is None:
+            return None
+        key = (id(s), s.version)
+        if getattr(self, "_live_key", None) != key:
+            used = {c["track"] for c in s.clips}
+            mask = np.array([i not in used for i in range(self.nch)])
+            self._live_mask = mask if mask.any() else None
+            self._live_key = key
+        return self._live_mask
+
+    def _auto_loop(self):
+        """Applies automation for buses, FX, sends and plug-in parameters (the audio
+        callback handles channel fader/pan/mute and the master fader itself)."""
+        last = {}
+        while True:
+            time.sleep(0.01)
+            s = self.session
+            if not (s and self.playing and not self.recording):
+                last.clear()
+                continue
+            try:
+                skip = self.touched()
+                for key in list(s.auto_lanes()):
+                    if not key.startswith("p:") or key in skip:
+                        continue
+                    target = auto_target(key[2:].split("/"))
+                    if s.automode.get(target, "read") == "off":
+                        continue
+                    v = s.auto_value(key, self.playhead)
+                    if v is None or abs(last.get(key, 1e9) - v) < 0.05:
+                        continue
+                    last[key] = v
+                    self.apply_auto_path(key[2:].split("/"), v)
+            except Exception:
+                traceback.print_exc()
+
+    def apply_auto_path(self, path, v):
+        path = [int(p) if p.lstrip("-").isdigit() else p for p in path]
+        if path[0] == "ins":  # ins/<target>/<idx>/<param key>
+            lst, _ = self._ins_target(str(path[1]))
+            lst[int(path[2])].set_raw(str(path[3]), v)
+            self.auto_values["/".join(map(str, path))] = v
+            return
+        if path[-1] == "mute":
+            v = v >= 0.5
+        self.mixer.set(path, v)
+        self.auto_values["/".join(map(str, path))] = v
 
     def touched(self):
         now = time.time()
@@ -320,6 +455,8 @@ class Engine:
             target, key = str(path[1]), f"ch:{path[1]}:{path[2]}"
         elif path == ["master", "fader"]:
             target, key = "master", "master:fader"
+        elif automatable(path):
+            target, key = auto_target(path), "p:" + "/".join(map(str, path))
         else:
             return False
         if s.automode.get(target) != "touch":
@@ -437,6 +574,8 @@ class Engine:
         for c, ch in enumerate(st["channels"]):
             self.mixer.inserts[c] = self._load_list(ch.get("inserts", []))
         self.mixer.minserts = self._load_list(st["master"].get("inserts", []))
+        for b in st.get("buses", []):
+            self.mixer.binserts[b["id"]] = self._load_list(b.get("inserts", []))
 
     def _load_list(self, lst):
         out = []
@@ -454,6 +593,10 @@ class Engine:
     def _ins_target(self, target):
         if target == "master":
             return self.mixer.minserts, self.mixer.state["master"]
+        if str(target).startswith("bus:"):
+            bid = target[4:]
+            st = next(b for b in self.mixer.state["buses"] if b["id"] == bid)
+            return self.mixer.binserts.setdefault(bid, []), st
         c = int(target)
         return self.mixer.inserts[c], self.mixer.state["channels"][c]
 
@@ -463,6 +606,8 @@ class Engine:
         st.setdefault("inserts", []).append({"path": path, "name": ins.name, "params": {}, "bypass": False})
         if target == "master":
             self.mixer.minserts = lst + [ins]
+        elif str(target).startswith("bus:"):
+            self.mixer.binserts[target[4:]] = lst + [ins]
         else:
             self.mixer.inserts[int(target)] = lst + [ins]
         self.dirty = True
@@ -473,6 +618,8 @@ class Engine:
         del st["inserts"][idx]
         if target == "master":
             self.mixer.minserts = lst
+        elif str(target).startswith("bus:"):
+            self.mixer.binserts[target[4:]] = lst
         else:
             self.mixer.inserts[int(target)] = lst
         self.dirty = True
@@ -538,6 +685,7 @@ class Engine:
                     m = Mixer(s.nch, s.sr, st)
                     m.inserts = [self._load_list(ch.get("inserts", [])) for ch in m.state["channels"]]
                     m.minserts = self._load_list(m.state["master"].get("inserts", []))
+                    m.binserts = {b["id"]: self._load_list(b.get("inserts", [])) for b in m.state["buses"]}
                     return m
                 tail = 2 * s.sr
                 passes = 2 if target is not None else 1
@@ -586,6 +734,7 @@ class Engine:
 
     def info(self):
         return {"status": self.status, "error": self.error, "cfg": {k: v for k, v in self.cfg.items() if k != "pin"},
+                "nIn": self.dev_ins,
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,
                 "devIns": self.dev_ins, "devOuts": self.dev_outs,
                 "inName": getattr(self, "in_name", ""), "outName": getattr(self, "out_name", ""),

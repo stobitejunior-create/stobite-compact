@@ -47,11 +47,12 @@ function setParam(path, v) {
   pending.set(path.join('/'), { path, v });
   if (!flushQueued) {
     flushQueued = true;
-    requestAnimationFrame(() => {
+    // a short timer (not requestAnimationFrame) so changes still go out from a background tab or a dimmed phone
+    setTimeout(() => {
       flushQueued = false;
       for (const { path, v } of pending.values()) send({ t: 'set', path, v });
       pending.clear();
-    });
+    }, 16);
   }
   emit('set', path);
 }
@@ -132,9 +133,16 @@ function autoModeButton(target) {
   return b;
 }
 
+// swap data-ic placeholders for SVG icons (keeps any text label after the icon)
+function applyIcons(root = document) {
+  $$('[data-ic]', root).forEach(el => { if (!el.querySelector(':scope > .ic')) el.prepend(icon(el.dataset.ic, el.classList.contains('tbtn') ? 18 : 16)); });
+}
+applyIcons();
+let playIcon = 'play';
 function renderTransport() {
   $('#btnPlay').classList.toggle('on', S.tr.playing);
-  $('#btnPlay').textContent = S.tr.playing ? '❚❚' : '▶';
+  const want = S.tr.playing ? 'pause' : 'play';
+  if (want !== playIcon) { playIcon = want; $('#btnPlay').innerHTML = ''; $('#btnPlay').append(icon(want, 18)); }
   $('#btnRec').classList.toggle('on', S.tr.recording);
   const c = $('#clock');
   c.textContent = tc(S.tr.playhead);
@@ -149,6 +157,8 @@ on('meters', m => {
 });
 on('info', () => {
   const i = S.info;
+  $('#tabWing').hidden = !i.cfg.show_wing;
+  if (!i.cfg.show_wing && S.view === 'console') showView('mixer');
   $('#audioDot').className = 'dot ' + (i.status === 'running' ? 'ok' : i.status === 'starting' ? 'wait' : 'bad');
   if (i.status === 'starting') toast('Starting audio… if macOS asks for microphone access, click Allow — that is how it hears the WING.');
   $('#audioDot').title = i.status === 'running' ? `Audio running: in ${i.inName} (${i.devIns} ch), out ${i.outName}` : 'Audio: ' + (i.error || i.status);
@@ -159,20 +169,26 @@ on('session', () => { $('#sessName').textContent = S.session.name; });
 const tabInd = h('span', { class: 'ind' });
 $('#tabs').prepend(tabInd);
 function moveTabInd() {
-  const b = $(`#tabs button[data-view="${S.view}"]`); if (!b) return;
+  const b = $(`#tabs button[data-view="${S.view}"]`);
+  tabInd.style.opacity = b ? 1 : 0;
+  if (!b) return;
   tabInd.style.width = b.offsetWidth + 'px';
   tabInd.style.transform = `translateX(${b.offsetLeft}px)`;
 }
 window.addEventListener('resize', moveTabInd);
+new ResizeObserver(moveTabInd).observe(document.querySelector('#tabs'));
 function showView(v) {
   S.view = v;
   $$('#tabs button').forEach(b => b.classList.toggle('on', b.dataset.view === v));
-  moveTabInd();
+  moveTabInd(); requestAnimationFrame(moveTabInd);
   $$('.view').forEach(el => el.classList.toggle('on', el.id === 'view-' + v));
   try { localStorage.setItem('stobite.view', v); } catch (e) { }
   emit('view', v);
 }
 $$('#tabs button').forEach(b => b.onclick = () => showView(b.dataset.view));
+$('#btnGuide').onclick = () => showView(S.view === 'guide' ? 'mixer' : 'guide');
+window.CATALOG = null;
+fetch('/api/catalog').then(r => r.json()).then(c => { window.CATALOG = c; emit('catalog'); });
 
 // ------------------------------------------------------------ keys
 document.addEventListener('keydown', e => {
