@@ -113,8 +113,10 @@ class App:
         e = self.engine
         last_tr = 0
         while True:
-            await asyncio.sleep(0.05)
+            # 20 meter updates a second while there's sound, 4 while the engine sleeps
+            await asyncio.sleep(0.25 if e.asleep else 0.05)
             if not self.clients:
+                await asyncio.sleep(0.5)
                 continue
             if e.playing and e.session and e.playhead > e.session.length() + e.sr:
                 e.stop()  # ran off the end of the recording
@@ -137,9 +139,10 @@ class App:
             if tick % 10 == 0:
                 msg["li"] = round(e.mixer.loud.integrated(), 1)
                 msg["lra"] = round(e.mixer.loud.lra(), 1)
-            if self.want_spectrum:
+            msg["zz"] = e.asleep
+            if self.want_spectrum and not e.asleep:
                 msg["sp"] = e.mixer.loud.spectrum()
-            if e.mixer.focus is not None:
+            if e.mixer.focus is not None and not e.asleep:
                 msg["csp"] = e.mixer.focus_ring.spectrum(e.sr)
             msg["ds"] = [round(v, 1) for v in m["ds"]]
             a = e.last_auto if e.playing else None
@@ -536,6 +539,12 @@ def build_app():
         a.engine.save()
         a.engine.stop_audio()
 
+    async def no_stale_ui(request, response):
+        # always revalidate the UI files (cheap 304s) so an update is never hidden by the browser cache
+        if request.path.startswith("/static/") or request.path == "/":
+            response.headers["Cache-Control"] = "no-cache"
+
+    app.on_response_prepare.append(no_stale_ui)
     app.on_startup.append(on_start)
     app.on_shutdown.append(on_stop)
     app["stobite"] = a

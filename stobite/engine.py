@@ -53,6 +53,9 @@ def list_devices():
     return out
 
 
+SLEEP_LEVEL = 3.2e-4  # -70 dBFS: any input above this wakes the engine instantly
+
+
 def find_named(name, kind):
     """Exact device lookup (no fallback) for optional devices like the cable loopback."""
     if not name:
@@ -158,7 +161,7 @@ class Feeder:
         while self.running:
             s = self.e.session
             if s is None or not self.e.playing or len(self.chunks) >= self.AHEAD:
-                self.wake.wait(0.02)
+                self.wake.wait(0.02 if self.e.playing else 1.0)  # play()/seek() wake it immediately
                 self.wake.clear()
                 continue
             if self.reader is None or self.reader.s is not s:
@@ -235,6 +238,8 @@ class Engine:
         self.export_job = None
         self.dirty = False
         self.cables = CableIO()
+        self.quiet = 0          # samples of continuous input silence
+        self.asleep = False     # idle: skip mixing until a signal arrives
         self.auto_values = {}
         self.touching = {}     # automation key -> (last write pos, wall time)
         self.last_auto = None
@@ -328,6 +333,23 @@ class Engine:
             else:
                 src = np.zeros((frames, nch), np.float32)
                 np.maximum(mixer.m_in, np.abs(raw).max(axis=0), out=mixer.m_in)
+            # ---- sleep while idle: nothing playing, every input silent and the mix has rung out
+            busy = self.playing or self.recording
+            if not busy:
+                in_pk = float(np.abs(src).max()) if src.size else 0.0
+                self.quiet = 0 if in_pk > SLEEP_LEVEL else self.quiet + frames
+                if self.quiet > self.sr * 3 and mixer.last_out_peak < 1e-5:
+                    if not self.asleep:
+                        self.asleep = True
+                        mixer.cable_out = None
+                    np.maximum(mixer.m_in, np.abs(raw).max(axis=0), out=mixer.m_in)
+                    mixer.loud.silence(frames)
+                    outdata.fill(0)
+                    self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
+                    return
+            else:
+                self.quiet = 0
+            self.asleep = False
             direct = np.zeros((frames, nch), np.float32) if self.cfg["direct_outs"] else None
             if self.playing and not self.recording and self.session is not None:
                 mixer.auto = self.last_auto = self.auto_for(self.session, self.playhead, self.touched())
@@ -409,11 +431,12 @@ class Engine:
         callback handles channel fader/pan/mute and the master fader itself)."""
         last = {}
         while True:
-            time.sleep(0.01)
             s = self.session
             if not (s and self.playing and not self.recording):
                 last.clear()
+                time.sleep(0.25)  # nothing to automate while stopped
                 continue
+            time.sleep(0.01)
             try:
                 skip = self.touched()
                 for key in list(s.auto_lanes()):

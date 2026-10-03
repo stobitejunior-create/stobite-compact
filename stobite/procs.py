@@ -7,8 +7,6 @@ All work on float32 blocks shaped (frames, channels) and keep their own state.
 import math
 
 import numpy as np
-from scipy import signal
-from scipy.ndimage import maximum_filter1d
 
 from .dsp import SUB, Dynamics, FilterBank, biquad, strip_sos, _db, _tc, BW_Q, sosfilt_multi, true_peak
 
@@ -263,7 +261,7 @@ class LookaheadLimiter:
         self.buf, self.dbuf = sig[-self.la:].copy(), dall[-self.la:].copy()
         # max over each output sample's lookahead window
         n = self.la + 1  # window [i, i + lookahead] for each output sample
-        win = maximum_filter1d(dall, size=n, origin=-(n // 2))[:frames]
+        win = np.lib.stride_tricks.sliding_window_view(dall, n)[:frames].max(axis=1)
         c = 10 ** (self.ceiling / 20)
         need = _db(np.maximum(win, 1e-9)) - self.ceiling
         nsub = max(frames // SUB, 1)

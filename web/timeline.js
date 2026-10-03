@@ -42,7 +42,9 @@
   const sOf = x => Math.max(0, Math.round(T.x0 + x * T.spp));
   const yOfRow = r => RULER + r * T.th - T.y0;
   const rowAt = y => Math.floor((y - RULER + T.y0) / T.th);
-  const invalidate = () => { dirty = true; };
+  let frameQueued = false;
+  const kick = () => { if (!frameQueued) { frameQueued = true; requestAnimationFrame(frame); } };
+  const invalidate = () => { dirty = true; kick(); };
 
   // ---------------------------------------------------------- size
   function resize() {
@@ -318,18 +320,18 @@
 
   function hexA(hex, a) { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; }
 
+  // draws only when something changed, or continuously while the playhead is moving
   function frame() {
-    if (S.view === 'edit' && S.session) {
-      const playing = S.tr.playing || S.tr.recording;
-      if (playing && T.follow && !T.drag) {
-        const px = xOf(playheadNow());
-        if (px > W * 0.92 || px < 0) { T.x0 = Math.max(0, playheadNow() - W * 0.08 * T.spp); }
-      }
-      if (dirty || playing) { draw(); dirty = false; }
+    frameQueued = false;
+    if (S.view !== 'edit' || !S.session) return;
+    const playing = S.tr.playing || S.tr.recording;
+    if (playing && T.follow && !T.drag) {
+      const px = xOf(playheadNow());
+      if (px > W * 0.92 || px < 0) { T.x0 = Math.max(0, playheadNow() - W * 0.08 * T.spp); }
     }
-    requestAnimationFrame(frame);
+    if (dirty || playing) { draw(); dirty = false; }
+    if (playing) kick();
   }
-  requestAnimationFrame(frame);
   on('view', v => v === 'edit' && (resize(), invalidate()));
   on('session', () => { for (const id of [...T.sel]) if (!clips().some(c => c.id === id)) T.sel.delete(id); renderClipbar(); invalidate(); });
   on('transport', invalidate);

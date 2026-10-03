@@ -151,7 +151,8 @@ function renderTransport() {
 on('transport', renderTransport);
 on('meters', m => {
   renderTransport();
-  $('#cpu').textContent = 'CPU ' + Math.round(m.ld * 100) + '%';
+  $('#cpu').textContent = m.zz ? 'Idle' : 'CPU ' + Math.round(m.ld * 100) + '%';
+  $('#cpu').title = m.zz ? 'Nothing is playing and all inputs are silent, so the audio engine is resting. It wakes instantly when sound arrives.' : 'Audio engine load (share of each audio block spent processing)';
   $('#cpu').style.color = m.ld > 0.8 ? 'var(--red)' : m.ld > 0.5 ? 'var(--yellow)' : '';
   if (m.dr) $('#cpu').title = `${m.dr} recording blocks dropped (disk too slow)`;
 });

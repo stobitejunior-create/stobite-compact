@@ -5,14 +5,41 @@ Shapes: audio blocks are (frames, channels) float32.
 """
 import math
 import numpy as np
-from scipy import signal
 
 IDENTITY = np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
 
-try:  # SciPy's compiled kernel without the per-call argument checking (much faster for small blocks)
-    from scipy.signal._sosfilt import _sosfilt as _sos_kernel
-except Exception:  # pragma: no cover
-    _sos_kernel = None
+def _load_kernel():
+    """SciPy's compiled biquad kernel, loaded on its own. Importing scipy.signal
+    would pull in ~65 MB of modules we never use."""
+    try:
+        import glob
+        import importlib.machinery
+        import importlib.util
+        import os
+        import scipy
+        hits = glob.glob(os.path.join(os.path.dirname(scipy.__file__), "signal", "_sosfilt*.so")) + \
+            glob.glob(os.path.join(os.path.dirname(scipy.__file__), "signal", "_sosfilt*.pyd"))
+        if hits:
+            loader = importlib.machinery.ExtensionFileLoader("_sosfilt", hits[0])
+            spec = importlib.util.spec_from_file_location("_sosfilt", hits[0], loader=loader)
+            mod = importlib.util.module_from_spec(spec)
+            loader.exec_module(mod)
+            return mod._sosfilt
+    except Exception:
+        pass
+    try:  # fall back to the normal import
+        from scipy.signal._sosfilt import _sosfilt
+        return _sosfilt
+    except Exception:  # pragma: no cover
+        return None
+
+
+_sos_kernel = _load_kernel()
+
+
+def _scipy_signal():
+    from scipy import signal  # only if the fast kernel is unavailable
+    return signal
 
 
 def sosfilt_multi(sos, x, zi):
@@ -23,18 +50,30 @@ def sosfilt_multi(sos, x, zi):
         return xt.T
     out = np.empty(x.shape, dtype=np.float64)
     for c in range(x.shape[1]):
-        out[:, c], zi[c] = signal.sosfilt(sos, x[:, c], zi=zi[c])
+        out[:, c], zi[c] = _scipy_signal().sosfilt(sos, x[:, c], zi=zi[c])
     return out
 
 
 # 4x oversampling filter for true-peak detection, designed once
-_TP_H = signal.firwin(48, 0.24, window=("kaiser", 6.0)) * 4.0
+def _kaiser_lowpass(taps, cutoff, beta):
+    n = np.arange(taps) - (taps - 1) / 2
+    h = 2 * cutoff * np.sinc(2 * cutoff * n) * np.kaiser(taps, beta)
+    return h / h.sum()
+
+
+_TP_H = _kaiser_lowpass(48, 0.125, 6.0) * 4.0       # 4x interpolation filter
+_TP_PHASES = [_TP_H[p::4] for p in range(4)]        # polyphase: one short filter per phase
 
 
 def true_peak(x):
     """Per-sample true-peak envelope (max over the 4 interpolated phases), x: (frames, ch)."""
-    up = signal.upfirdn(_TP_H, x, up=4, axis=0)[: x.shape[0] * 4]
-    return np.abs(up).max(axis=1).reshape(-1, 4).max(axis=1)
+    frames = x.shape[0]
+    env = np.abs(x).max(axis=1)
+    for ph in _TP_PHASES:
+        for c in range(x.shape[1]):
+            y = np.convolve(x[:, c], ph)[:frames]
+            np.maximum(env, np.abs(y), out=env)
+    return env
 
 
 def sosfilt_fast(sos, x, zi):
@@ -45,7 +84,7 @@ def sosfilt_fast(sos, x, zi):
         _sos_kernel(np.ascontiguousarray(sos, dtype=np.float64), y, z)
         zi[:] = z[0]
         return y[0]
-    y, zi[:] = signal.sosfilt(sos, x, zi=zi)
+    y, zi[:] = _scipy_signal().sosfilt(sos, x, zi=zi)
     return y
 
 # ---------------------------------------------------------------- biquads (RBJ cookbook)
@@ -132,9 +171,10 @@ class FilterBank:
             self.zi[ch] = np.zeros((sos.shape[0], 2))
         self.sos[ch] = sos
 
-    def process(self, x):
+    def process(self, x, skip=None):
+        """skip: optional boolean mask of channels to leave alone (silent ones)."""
         for c, sos in enumerate(self.sos):
-            if sos is not None:
+            if sos is not None and (skip is None or not skip[c]):
                 x[:, c] = sosfilt_fast(sos, x[:, c], self.zi[c])
         return x
 
@@ -396,6 +436,23 @@ class Loudness:
         rel = self.lufs(float(b.mean())) - 10
         b = b[b > 10 ** ((rel + 0.691) / 10)]
         return self.lufs(float(b.mean())) if len(b) else -99.0
+
+    def silence(self, n):
+        """Account for n silent samples without running any filters (used while idle)."""
+        self.last_tp = 0.0
+        i = 0
+        while i < n:
+            take = min(self.bin_len - self.acc_n, n - i)
+            self.acc_n += take
+            i += take
+            if self.acc_n >= self.bin_len:
+                self.bins.append(self.acc / self.bin_len)
+                self.acc, self.acc_n = 0.0, 0
+                if len(self.bins) >= 4:
+                    self.blocks.append(sum(self.bins[-4:]) / 4)
+                if len(self.bins) >= 30:
+                    self.short_hist.append(sum(self.bins[-30:]) / 30)
+                del self.bins[:-30]
 
     def lra(self):
         """EBU Tech 3342 loudness range: spread of gated short-term loudness (10th-95th percentile)."""

@@ -25,6 +25,9 @@ try:
 except Exception:  # pragma: no cover - optional
     pb = None
 
+QUIET = 1e-5     # -100 dBFS: a bus / FX / master block this quiet counts as silence
+CH_QUIET = 1e-4  # -80 dBFS: channels this quiet skip their filters (their audio still passes)
+
 COLORS = ["#e5484d", "#f76b15", "#ffc53d", "#46a758", "#12a594", "#0090ff", "#6e56cf", "#d6409f"]
 N_CABLES = 4
 
@@ -316,6 +319,12 @@ class Mixer:
         self.fx_duck = [Ducker(fs) for _ in self.state["fx"]]
         self.bus_last = {}
         self.bus_cur = {}
+        # silence tracking (samples of continuous silence) so idle parts of the mix cost nothing
+        self.ch_quiet = np.zeros(self.nch)
+        self.bus_quiet = {}
+        self.fx_quiet = [0] * len(self.state["fx"])
+        self.master_quiet = 0
+        self.last_out_peak = 0.0
 
     def _fit_channels(self):
         chs = self.state["channels"]
@@ -606,8 +615,9 @@ class Mixer:
             return None
         if spec.startswith("bus:"):
             bid = spec[4:]
-            sig = self.bus_cur.get(bid)
-            if sig is None:
+            if bid in self.bus_cur:
+                sig = self.bus_cur[bid]
+            else:
                 sig = self.bus_last.get(bid)
             if sig is not None and sig.shape[0] == x.shape[0]:
                 return sig
@@ -640,20 +650,26 @@ class Mixer:
             if auto.get("master") is not None and not self.state["master"]["mute"]:
                 master_g = dsp.db_to_lin(auto["master"])
 
-        np.maximum(self.m_in, np.abs(x).max(axis=0), out=self.m_in)
+        pk_in = np.abs(x).max(axis=0)
+        np.maximum(self.m_in, pk_in, out=self.m_in)
+        # channels silent for half a second skip their per-channel filters (their audio is already ~zero)
+        self.ch_quiet = np.where(pk_in < CH_QUIET, self.ch_quiet + frames, 0)
+        dormant = self.ch_quiet > self.fs * 0.5
         # ---- channel strips
         x *= c["pre"]
-        self.filters.process(x)
+        self.filters.process(x, dormant)
         for ch, at in list(self.tuners.items()):  # pitch correction before dynamics
-            x[:, ch] = at.process(x[:, ch])
+            if not dormant[ch]:
+                x[:, ch] = at.process(x[:, ch])
         self.dyn.process(x)
         self.deess.process(x)
         for ch, eq in self.dyneqs.items():
-            x[:, ch:ch + 1] = eq.process(x[:, ch:ch + 1].copy())
+            if not dormant[ch]:
+                x[:, ch:ch + 1] = eq.process(x[:, ch:ch + 1].copy())
         self.trans.process(x)
         self.sat.process(x)
         for ch, ins in enumerate(self.inserts):
-            if ins:
+            if ins and not dormant[ch]:
                 col = x[:, ch:ch + 1]
                 for p in ins:
                     col = p.process(col, self.fs)
@@ -689,6 +705,14 @@ class Mixer:
                 f = c["fx"][i] if i < len(c["fx"]) else None
                 if fx is None or f is None or f["ret"] == 0.0:
                     continue
+                while len(self.fx_quiet) <= i:
+                    self.fx_quiet.append(0)
+                if float(np.abs(sends[:, i]).max()) < QUIET:
+                    self.fx_quiet[i] += frames
+                    if self.fx_quiet[i] > self.fs * 8:  # nothing sent for 8 s: the tail has died away
+                        continue
+                else:
+                    self.fx_quiet[i] = 0
                 y = run_fx(fx, sends[:, i], self.fs) * f["ret"]
                 if f["duck"]:
                     y = y * self.fx_duck[i].gain(self._peak_db(self._sc_signal(f["duck"].get("src", ""), x, fad)), f["duck"], frames)
@@ -704,6 +728,14 @@ class Mixer:
             k = di[bid]
             sig = Y[:, 2 * k:2 * k + 2].copy()
             strip = self.strips.get(bid)
+            q = self.bus_quiet.get(bid, 0)
+            q = q + frames if float(np.abs(sig).max()) < QUIET else 0
+            self.bus_quiet[bid] = q
+            if q > self.fs * 1.5:  # silent bus: skip its processing entirely
+                self.bus_cur[bid] = None
+                if strip is not None:
+                    strip.duck.gr = 0.0
+                continue
             if strip is not None:
                 det = None
                 sc = (bs.get("comp") or {}).get("sc") or (bs.get("dyneq") or {}).get("sc")
@@ -731,14 +763,20 @@ class Mixer:
 
         # ---- master
         out = Y[:, 0:2].astype(np.float32)
-        self.master_strip.process(out)
-        for p in self.minserts:
-            out = p.process(out, self.fs)
-        out *= master_g
-        lim = self.state["master"].get("limiter") or {}
-        if lim.get("on"):
-            np.clip(out, -1.0, 1.0, out=out)
-        self.loud.process(out)
+        self.master_quiet = self.master_quiet + frames if float(np.abs(out).max()) < QUIET else 0
+        if self.master_quiet > self.fs * 1.5:
+            out[:] = 0.0
+            self.loud.silence(frames)
+        else:
+            self.master_strip.process(out)
+            for p in self.minserts:
+                out = p.process(out, self.fs)
+            out *= master_g
+            lim = self.state["master"].get("limiter") or {}
+            if lim.get("on"):
+                np.clip(out, -1.0, 1.0, out=out)
+            self.loud.process(out)
+        self.last_out_peak = float(np.abs(out).max()) if frames else 0.0
         np.maximum(self.m_master, np.abs(out).max(axis=0), out=self.m_master)
         self.m_mrms = max(self.m_mrms, float(np.sqrt((out * out).mean())))
         self.m_tp = max(self.m_tp, self.loud.last_tp)
@@ -751,7 +789,7 @@ class Mixer:
             if spec == "master":
                 sig = out
             elif spec.startswith("bus:"):
-                sig = self.bus_cur.get(spec[4:])
+                sig = self.bus_cur.get(spec[4:])  # None when that bus is silent
             else:
                 sig = self._sc_signal(spec, x, fad)
             if sig is not None:

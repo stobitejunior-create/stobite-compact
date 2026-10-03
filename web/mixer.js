@@ -57,8 +57,11 @@
   }
 
   // ---------------------------------------------------------- strips
+  let mixerStale = true;
   function buildMixer() {
     if (!S.mixer) return;
+    if (S.view !== 'mixer') { mixerStale = true; return; }  // built when you open the Mixer
+    mixerStale = false;
     reg.clear(); stripEls = []; busEls = []; fxEls = [];
     buildBanks();
     const box = $('#strips'); box.innerHTML = '';
@@ -249,7 +252,11 @@
   // ---------------------------------------------------------- live updates
   on('mixer', () => { buildMixer(); if (edTarget != null) openEditor(edTarget); });
   on('catalog', () => { if (S.mixer) renderSceneBar(); });
-  on('view', v => v === 'mixer' && requestAnimationFrame(() => { sizeMeters(); redrawThumbs(); }));
+  on('view', v => {
+    if (v !== 'mixer') return;
+    if (mixerStale) buildMixer();
+    requestAnimationFrame(() => { sizeMeters(); redrawThumbs(); });
+  });
   $('#showSends').onchange = buildMixer;
   window.addEventListener('resize', sizeMeters);
   let rebuildQueued = false;

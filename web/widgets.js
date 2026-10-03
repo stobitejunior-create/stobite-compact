@@ -148,36 +148,42 @@ function Fader({ value = 0, height = 180, onChange }) {
 
 // --- Meter (peak with hold). One shared animation loop gives smooth
 // broadcast-style ballistics: instant rise, eased fall, peak hold.
+// The loop only runs while some meter is actually moving; silent meters cost nothing.
 const _meters = new Set();
-let _mLast = performance.now();
+let _mLast = 0, _mRunning = false;
 function _meterLoop(now) {
   const dt = Math.min(0.1, (now - _mLast) / 1000); _mLast = now;
-  for (const m of _meters) m._tick(dt, now);
-  requestAnimationFrame(_meterLoop);
+  for (const m of _meters) if (!m._tick(dt, now)) _meters.delete(m);
+  if (_meters.size) requestAnimationFrame(_meterLoop); else _mRunning = false;
 }
-requestAnimationFrame(_meterLoop);
+function _wakeMeter(m) {
+  _meters.add(m);
+  if (!_mRunning) { _mRunning = true; _mLast = performance.now(); requestAnimationFrame(_meterLoop); }
+}
 function Meter() {
   const bar = h('i'), hold = h('b');
   const el = h('div', { class: 'meter' }, bar, hold);
-  let target = 0, cur = 0, hv = 0, ht = 0, shown = -1, shownH = -1;
+  let target = 0, cur = 0, hv = 0, ht = 0, shown = -1, shownH = -1, hgt = 0;
   const api = {
     el,
-    set(lin) { target = meterPos(lin); },
-    size() { el.style.setProperty('--h', el.clientHeight + 'px'); },
+    set(lin) { target = meterPos(lin); if (target > 0 || cur > 0 || hv > 0) _wakeMeter(api); },
+    size() { hgt = el.clientHeight; el.style.setProperty('--h', hgt + 'px'); },
+    // returns false when the meter is at rest (stops animating until the next set)
     _tick(dt, now) {
-      if (!el.isConnected) { _meters.delete(api); return; }
+      if (!el.isConnected) return false;
       cur = target >= cur ? target : Math.max(target, cur - dt * 0.36); // ~24 dB/s fall over a 66 dB scale
       if (cur >= hv || now - ht > 1600) { hv = Math.max(cur, hv - dt * 0.5); if (cur >= hv) ht = now; }
       if (Math.abs(cur - shown) > 0.002) { bar.style.clipPath = `inset(${((1 - cur) * 100).toFixed(2)}% 0 0 0)`; shown = cur; }
       if (Math.abs(hv - shownH) > 0.002) {
-        hold.style.transform = `translateY(${-hv * el.clientHeight}px)`;
+        if (!hgt) hgt = el.clientHeight;
+        hold.style.transform = `translateY(${-hv * hgt}px)`;
         hold.style.opacity = hv > 0.01 ? 1 : 0;
         hold.style.background = hv > 0.9 ? 'var(--red)' : 'var(--yellow)';
         shownH = hv;
       }
+      return cur > 0.0005 || hv > 0.0005 || target > 0;
     },
   };
-  _meters.add(api);
   return api;
 }
 
