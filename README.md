@@ -52,7 +52,6 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 - **Automation:** Off/Read/Touch on every channel, bus, FX return and the master: volume, pan, mute, sends, bus and FX levels, ducking, plug-in parameters.
 - **Edit:** 48-track raw recording, split/trim/move/fades, ripple range delete, markers, loop, **drag-and-drop audio import**, export of the mix or separate tracks.
 - **Virtual cables:** 4 stereo cables (speaker and microphone at once). Attach BlackHole 16ch (Mac) or VB-Cable (Windows) to send them to OBS or Zoom.
-- **Guide** (book icon, top right): what every control does, plus worship and preaching recipes.
 - **Phone remote:** the same app at the address shown in Setup. The optional WING tab (off by default, Setup) can control the console itself.
 
 ## Carrying a service between church and home

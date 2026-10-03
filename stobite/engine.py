@@ -111,7 +111,10 @@ def auto_target(path):
 
 
 def find_device(name, kind):
-    """Find device index by saved name; fall back to a WING, then the default."""
+    """Find a device by its saved name.
+    Input:  the chosen device, or with "Auto" the WING. Never the computer's own microphone:
+            if the WING (or the chosen device) isn't connected there is simply no main input.
+    Output: the chosen device, else a WING, else the system default output."""
     devs = list_devices()
     key = "ins" if kind == "input" else "outs"
     if name:
@@ -121,10 +124,14 @@ def find_device(name, kind):
         for d in devs:
             if d["name"] == name and d[key] > 0:
                 return d["id"]
+        if kind == "input":
+            return None  # the chosen interface isn't plugged in
     wings = [d for d in devs if d["wing"] and d[key] > 0]
     if wings:
         asio = [d for d in wings if "ASIO" in d["api"]]
         return (asio or wings)[0]["id"]
+    if kind == "input":
+        return None
     try:
         idx = sd.default.device[0 if kind == "input" else 1]
         return idx if idx is not None and idx >= 0 else None
@@ -250,6 +257,7 @@ class Engine:
         threading.Thread(target=self._autosave, daemon=True).start()
         threading.Thread(target=self._auto_loop, daemon=True).start()
         threading.Thread(target=self._extra_loop, daemon=True).start()
+        threading.Thread(target=self._device_watch, daemon=True).start()
 
     # ------------------------------------------------------------- config
     def save_cfg(self):
@@ -286,7 +294,8 @@ class Engine:
                 self.sr = sr
                 self.mixer = Mixer(self.nch, sr, self.mixer.snapshot())
             self.stream.start()
-            self.in_name = sd.query_devices(ind)["name"] if ind is not None else "None"
+            self.in_name = sd.query_devices(ind)["name"] if ind is not None else ""
+            self.in_is_wing = bool(self.in_name) and any(k in self.in_name.upper() for k in ("WING", "BEHRINGER"))
             self.out_name = sd.query_devices(outd)["name"]
             self.status, self.error = "running", ""
             self.start_cables()
@@ -578,6 +587,32 @@ class Engine:
             self.session.save(self.mixer.snapshot())
             self.dirty = False
 
+    def _device_watch(self):
+        """While no main input is connected, look for the WING (or the chosen interface) every few
+        seconds and connect as soon as it appears. Only while nothing is playing or recording:
+        refreshing the device list briefly restarts the audio."""
+        while True:
+            time.sleep(4)
+            try:
+                if self.dev_ins > 0 or self.playing or self.recording or self.status == "starting":
+                    continue
+                if not (self.asleep or self.stream is None):
+                    continue
+                self.stop_audio()
+                self.cables.stop()
+                self.extra.stop()
+                self._extra_force = True   # reopen other microphones after the re-scan
+                try:  # PortAudio only sees newly plugged devices after a re-scan
+                    sd._terminate()
+                    sd._initialize()
+                except Exception:
+                    pass
+                self.start_audio()
+                if self.dev_ins > 0:
+                    print(f"Connected to {self.in_name}", flush=True)
+            except Exception:
+                traceback.print_exc()
+
     def _extra_loop(self):
         """Open / close other input devices as channels start or stop using them."""
         last = None
@@ -585,7 +620,8 @@ class Engine:
             time.sleep(1.0)
             try:
                 want = frozenset(self.mixer.devices_in_use()) if self.stream is not None else frozenset()
-                if want != last:
+                if want != last or getattr(self, "_extra_force", False):
+                    self._extra_force = False
                     self.extra.sync(want, self.sr, int(self.cfg["block"]))
                     last = want
                     self.emit("status")
@@ -703,7 +739,7 @@ class Engine:
     def info(self):
         return {"status": self.status, "error": self.error, "cfg": {k: v for k, v in self.cfg.items() if k != "pin"},
                 "extraInputs": dict(self.extra.status),
-                "nIn": self.dev_ins,
+                "nIn": self.dev_ins, "inIsWing": bool(getattr(self, "in_is_wing", False)),
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,
                 "devIns": self.dev_ins, "devOuts": self.dev_outs,
                 "inName": getattr(self, "in_name", ""), "outName": getattr(self, "out_name", ""),

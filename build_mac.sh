@@ -13,4 +13,6 @@ cp -R "dist/Stobite Compact.app" dist/dmg/
 ln -s /Applications dist/dmg/Applications
 hdiutil create -volname "Stobite Compact" -srcfolder dist/dmg -ov -format UDZO dist/Stobite-Compact-mac.dmg >/dev/null
 rm -rf dist/dmg build
+# keep only the DMG: a loose .app here would show up in Spotlight/Launchpad next to the installed one
+rm -rf "dist/Stobite Compact.app" "dist/Stobite Compact"
 echo "Built: dist/Stobite-Compact-mac.dmg"

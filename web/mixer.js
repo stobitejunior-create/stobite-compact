@@ -20,6 +20,12 @@
 
   // ---------------------------------------------------------- option lists
   window.destOptions = (self) => [['master', 'Master (direct)'], ...S.mixer.buses.filter(b => b.id !== self).map(b => [b.id, b.name]), ['none', '— not routed —']];
+  // what the 48 main inputs really are: the WING, another interface chosen in Setup, or nothing connected
+  window.mainInputLabel = () => {
+    const i = S.info;
+    if (!i || !i.devIns || i.inIsWing || !i.inName) return 'WING USB';
+    return i.inName.length > 22 ? i.inName.slice(0, 21) + '…' : i.inName;
+  };
   // other microphones / interfaces the computer can see (refreshed when Setup or the editor opens)
   window.INPUT_DEVICES = [];
   window.refreshInputDevices = async () => { try { INPUT_DEVICES = (await api('devices')).filter(d => d.ins > 0); } catch (e) { } };
@@ -29,7 +35,8 @@
   window.inputOptions = () => {
     const n = Math.max(S.info?.nIn || 0, 48);
     const o = [];
-    for (let i = 0; i < n; i++) o.push([`in:${i}`, `WING USB ${i + 1}`]);
+    const mainLabel = mainInputLabel();
+    for (let i = 0; i < n; i++) o.push([`in:${i}`, `${mainLabel} ${i + 1}${S.info && !S.info.devIns ? ' (not connected)' : ''}`]);
     for (let k = 0; k < 4; k++) { o.push([`cable:${2 * k}`, `Cable ${k + 1} L`]); o.push([`cable:${2 * k + 1}`, `Cable ${k + 1} R`]); }
     const mainName = S.info?.inName;
     // on Windows the same mic appears once per audio system; prefer one entry per name
@@ -52,7 +59,8 @@
       const d = INPUT_DEVICES.find(x => devKey(x) === key);
       return 'MIC ' + (name.length > 14 ? name.slice(0, 13) + '…' : name) + (d && d.ins > 1 ? ' ' + (ch + 1) : '');
     }
-    const o = inputOptions().find(o => o[0] === spec); return o ? o[1].replace('WING USB', 'IN') : '—';
+    if (typeof spec === 'string' && spec.startsWith('in:')) return 'IN ' + (+spec.slice(3) + 1) + (S.info && !S.info.devIns ? ' · off' : '');
+    const o = inputOptions().find(o => o[0] === spec); return o ? o[1] : '—';
   };
   const destName = id => id === 'master' ? 'Master' : id === 'none' ? 'Off' : (S.mixer.buses.find(b => b.id === id)?.name || id);
   const destColor = id => id === 'master' ? '#e8e9eb' : (S.mixer.buses.find(b => b.id === id)?.color || '#555');
@@ -488,7 +496,7 @@
     const K = (p, opts) => { const k = Knob({ ...opts, value: getPath(S.mixer, p) ?? opts.def ?? 0, onChange: v => setParam(p, v) }); edCtl.set(key(p), k); return k.el; };
     const T = (p, label = 'ON') => { const b = h('button', { class: 'tog g' + (getPath(S.mixer, p) ? ' on' : ''), onclick: () => setParam(p, !getPath(S.mixer, p)) }, label); edCtl.set(key(p), { set: v => b.classList.toggle('on', !!v) }); return b; };
     const S_ = (p, options, extra) => { const s = sel(p, options, extra); edCtl.set(key(p), { set: v => s.value = v }); return s; };
-    const help = topic => h('button', { class: 'help', title: 'What does this do?', onclick: () => openGuide(topic) }, '?');
+    const help = topic => !window.openGuide ? null : h('button', { class: 'help', title: 'What does this do?', onclick: () => openGuide(topic) }, '?');
     const panel = (title, topic, togglePath, ...kids) => h('div', { class: 'panel' }, h('h4', {}, title, help(topic), togglePath ? T(togglePath) : null), ...kids);
     $('#edName').value = st.name;
     $('#edName').disabled = kind === 'master';
@@ -890,7 +898,7 @@
   function buildFxEditor(t, st, body, P, K, T, S_, panel, live) {
     const isRev = ['plate', 'hall', 'room'].includes(st.type), isDelay = st.type === 'delay';
     const knobs = Object.keys(st.params).filter(k => FX_PARAMS[k]).map(k => { const p = FX_PARAMS[k]; return K(P('params', k), { label: p[0], min: p[1], max: p[2], log: !!p[4], def: st.params[k], format: p[3], size: 36, color: '#3aa0ff' }); });
-    body.append(h('div', { class: 'panel wide' }, h('h4', {}, isRev ? 'Reverb' : isDelay ? 'Delay' : 'Effect', h('button', { class: 'help', onclick: () => openGuide(isDelay ? 'delay' : 'reverb') }, '?')),
+    body.append(h('div', { class: 'panel wide' }, h('h4', {}, isRev ? 'Reverb' : isDelay ? 'Delay' : 'Effect', window.openGuide ? h('button', { class: 'help', onclick: () => openGuide(isDelay ? 'delay' : 'reverb') }, '?') : null),
       h('div', { class: 'frow' }, S_(P('type'), FX_TYPE_OPTS, { onchange: () => setTimeout(() => openEditor(t), 60) }),
         isDelay ? S_(P('params', 'note'), NOTE_OPTS.map(([v, l]) => [v, l + ' note'])) : null,
         isDelay ? T(P('params', 'sync'), 'Tempo sync') : null, isDelay ? T(P('params', 'pingpong'), 'Ping-pong') : null),

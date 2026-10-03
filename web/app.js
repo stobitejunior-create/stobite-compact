@@ -187,7 +187,6 @@ function showView(v) {
   emit('view', v);
 }
 $$('#tabs button').forEach(b => b.onclick = () => showView(b.dataset.view));
-$('#btnGuide').onclick = () => showView(S.view === 'guide' ? 'mixer' : 'guide');
 window.CATALOG = null;
 fetch('/api/catalog').then(r => r.json()).then(c => { window.CATALOG = c; emit('catalog'); });
 

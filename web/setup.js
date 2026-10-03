@@ -9,7 +9,7 @@
     const devName = d => `${d.name} (${d.api})`;
     const sel = (kind) => {
       const key = kind === 'input' ? 'ins' : 'outs';
-      const s = h('select', {}, kind === 'input' ? h('option', { value: '' }, 'Auto (finds the WING)') : h('option', { value: '' }, 'Auto'));
+      const s = h('select', {}, kind === 'input' ? h('option', { value: '' }, 'Auto: the WING only (never the computer’s mic)') : h('option', { value: '' }, 'Auto'));
       for (const d of devices.filter(d => d[key] > 0)) s.append(h('option', { value: devName(d), selected: c[kind] === devName(d) || c[kind] === d.name }, `${d.wing ? '★ ' : ''}${d.name} — ${d[key]} ch (${d.api})`));
       s.onchange = () => save({ [kind]: s.value || null });
       return s;
@@ -25,7 +25,9 @@
 
     box.append(
       h('div', { class: 'card' }, h('h3', {}, 'Audio interface'), statusLine,
-        wingFound ? h('p', { class: 'ok' }, '★ WING detected over USB') : h('p', { class: 'hint' }, 'WING not detected — see “Connecting the WING Compact” below.'),
+        i.devIns && i.inIsWing ? h('p', { class: 'ok' }, `★ WING connected: ${i.devIns} inputs`) :
+          i.devIns ? h('p', { class: 'ok' }, `Main inputs: ${i.inName} (${i.devIns})`) :
+          h('p', { class: 'warn-line' }, 'No WING connected, so channels set to WING inputs are silent (your computer’s microphone is never used unless you pick it on a channel). Plug in the WING and it connects by itself within a few seconds.'),
         h('div', { class: 'f' }, h('span', {}, 'Input (record from)'), sel('input')),
         h('div', { class: 'f' }, h('span', {}, 'Output (listen on)'), sel('output')),
         h('div', { class: 'f' }, h('span', {}, 'Sample rate'), num('sr', [[44100, '44.1 kHz'], [48000, '48 kHz (WING default)'], [96000, '96 kHz']])),
