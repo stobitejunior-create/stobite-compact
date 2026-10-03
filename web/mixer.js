@@ -20,17 +20,40 @@
 
   // ---------------------------------------------------------- option lists
   window.destOptions = (self) => [['master', 'Master (direct)'], ...S.mixer.buses.filter(b => b.id !== self).map(b => [b.id, b.name]), ['none', '— not routed —']];
+  // other microphones / interfaces the computer can see (refreshed when Setup or the editor opens)
+  window.INPUT_DEVICES = [];
+  window.refreshInputDevices = async () => { try { INPUT_DEVICES = (await api('devices')).filter(d => d.ins > 0); } catch (e) { } };
+  refreshInputDevices();
+  on('info', () => refreshInputDevices());
+  const devKey = d => `${d.name} (${d.api})`;
   window.inputOptions = () => {
     const n = Math.max(S.info?.nIn || 0, 48);
     const o = [];
     for (let i = 0; i < n; i++) o.push([`in:${i}`, `WING USB ${i + 1}`]);
     for (let k = 0; k < 4; k++) { o.push([`cable:${2 * k}`, `Cable ${k + 1} L`]); o.push([`cable:${2 * k + 1}`, `Cable ${k + 1} R`]); }
+    const mainName = S.info?.inName;
+    // on Windows the same mic appears once per audio system; prefer one entry per name
+    const seen = new Set();
+    for (const d of INPUT_DEVICES) {
+      if (d.name === mainName || seen.has(d.name)) continue;
+      seen.add(d.name);
+      if (d.ins === 1) o.push([`dev:${devKey(d)}|0`, `🎤 ${d.name}`]);
+      else for (let c = 0; c < Math.min(d.ins, 16); c++) o.push([`dev:${devKey(d)}|${c}`, `🎤 ${d.name} — input ${c + 1}`]);
+    }
     o.push(['none', '— none —']);
     return o;
   };
   window.scOptions = () => [['', '— none —'], ...S.mixer.buses.map(b => [`bus:${b.id}`, `Bus: ${b.name}`]),
     ...S.mixer.order.map(c => [`ch:${c}`, `Ch ${c + 1}: ${S.mixer.channels[c].name}`])];
-  const inputLabel = spec => { const o = inputOptions().find(o => o[0] === spec); return o ? o[1].replace('WING USB', 'IN') : '—'; };
+  const inputLabel = spec => {
+    if (typeof spec === 'string' && spec.startsWith('dev:')) {
+      const key = spec.slice(4, spec.lastIndexOf('|')), ch = +spec.slice(spec.lastIndexOf('|') + 1);
+      const name = key.replace(/ \([^)]*\)$/, '');
+      const d = INPUT_DEVICES.find(x => devKey(x) === key);
+      return 'MIC ' + (name.length > 14 ? name.slice(0, 13) + '…' : name) + (d && d.ins > 1 ? ' ' + (ch + 1) : '');
+    }
+    const o = inputOptions().find(o => o[0] === spec); return o ? o[1].replace('WING USB', 'IN') : '—';
+  };
   const destName = id => id === 'master' ? 'Master' : id === 'none' ? 'Off' : (S.mixer.buses.find(b => b.id === id)?.name || id);
   const destColor = id => id === 'master' ? '#e8e9eb' : (S.mixer.buses.find(b => b.id === id)?.color || '#555');
   window.destName = destName; window.destColor = destColor; window.inputLabel = inputLabel;
@@ -508,7 +531,8 @@
       body.append(panel('Input & routing', 'input', null,
         h('div', { class: 'frow' }, h('button', { class: 'btn', onclick: () => pickFor(t) }, icon(st.icon || 'input', 18), inst ? inst.label : 'Choose instrument…'),
           h('input', { type: 'color', value: st.color, class: 'colorpick', onchange: e => setParam(P('color'), e.target.value) })),
-        h('div', { class: 'f2' }, h('span', {}, 'Input'), S_(P('input'), inputOptions())),
+        h('div', { class: 'f2' }, h('span', {}, 'Input'), S_(P('input'), inputOptions(), { onchange: () => setTimeout(() => openEditor(t), 1300) })),
+        devStatus(st.input),
         h('div', { class: 'f2' }, h('span', {}, 'Output bus'), S_(P('out'), destOptions(), { onchange: () => openEditor(t) })),
         h('div', { class: 'knobs' }, K(P('trim'), { label: 'Gain / trim', min: -24, max: 24, def: 0, format: fmt.db, bipolar: true, size: 40, big: true }), T(P('phase'), 'Ø Phase')),
         presetSel,
@@ -815,6 +839,15 @@
     send({ t: 'focus', ch: kind === 'ch' ? t : null, target });
     $('#editor').hidden = false;
     requestAnimationFrame(() => fns.redraws.forEach(f => f()));
+  }
+
+  function devStatus(spec) {
+    if (typeof spec !== 'string' || !spec.startsWith('dev:')) return null;
+    const key = spec.slice(4, spec.lastIndexOf('|'));
+    const st = S.info?.extraInputs?.[key];
+    if (!st) return h('p', { class: 'hint' }, 'Opening this microphone…');
+    if (st === 'ok') return h('p', { class: 'ok', style: 'font-size:12px;margin:2px 0' }, '● Microphone connected. It has its own clock, so keep important sources on the WING.');
+    return h('p', { class: 'err', style: 'font-size:12px;margin:2px 0' }, 'This microphone can’t be opened: ' + st);
   }
 
   // ---------------------------------------------------------- channel sound files

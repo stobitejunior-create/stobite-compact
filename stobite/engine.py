@@ -16,6 +16,7 @@ import sounddevice as sd
 
 from .mixer import Mixer, Insert
 from .cables import CableIO
+from .inputs import ExtraInputs
 from .session import Session, Reader, Recorder, home_dir, list_sessions
 
 DEFAULT_CFG = {
@@ -235,6 +236,7 @@ class Engine:
         self.export_job = None
         self.dirty = False
         self.cables = CableIO()
+        self.extra = ExtraInputs()   # other microphones / interfaces used by channels
         self.quiet = 0          # samples of continuous input silence
         self.asleep = False     # idle: skip mixing until a signal arrives
         self.auto_values = {}
@@ -247,6 +249,7 @@ class Engine:
             self.new_session(time.strftime("Session %Y-%m-%d"))
         threading.Thread(target=self._autosave, daemon=True).start()
         threading.Thread(target=self._auto_loop, daemon=True).start()
+        threading.Thread(target=self._extra_loop, daemon=True).start()
 
     # ------------------------------------------------------------- config
     def save_cfg(self):
@@ -316,8 +319,9 @@ class Engine:
             mixer = self.mixer
             cable_in = self.cables.exchange(mixer.cable_out, frames)
             hw = indata if indata is not None else np.zeros((frames, 0), np.float32)
+            extra, extra_map = self.extra.read(frames)
             # each channel's chosen input, exactly as it arrived: no trim, EQ, dynamics or fader
-            raw = mixer.route_inputs(hw, cable_in)
+            raw = mixer.route_inputs(hw, cable_in, extra, extra_map)
             if self.recording:
                 self.recorder.push(raw)
             if self.playing and not self.recording:
@@ -574,6 +578,20 @@ class Engine:
             self.session.save(self.mixer.snapshot())
             self.dirty = False
 
+    def _extra_loop(self):
+        """Open / close other input devices as channels start or stop using them."""
+        last = None
+        while True:
+            time.sleep(1.0)
+            try:
+                want = frozenset(self.mixer.devices_in_use()) if self.stream is not None else frozenset()
+                if want != last:
+                    self.extra.sync(want, self.sr, int(self.cfg["block"]))
+                    last = want
+                    self.emit("status")
+            except Exception:
+                traceback.print_exc()
+
     def _autosave(self):
         while True:
             time.sleep(10)
@@ -684,6 +702,7 @@ class Engine:
 
     def info(self):
         return {"status": self.status, "error": self.error, "cfg": {k: v for k, v in self.cfg.items() if k != "pin"},
+                "extraInputs": dict(self.extra.status),
                 "nIn": self.dev_ins,
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,
                 "devIns": self.dev_ins, "devOuts": self.dev_outs,

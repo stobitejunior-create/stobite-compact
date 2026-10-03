@@ -10,7 +10,7 @@
 </head>
 <body>
 <header id="top">
-  <div class="brand"><span class="logo">S</span><span class="brand-name">Stobite <b>Compact</b></span></div>
+  <button class="brand" id="brandHome" title="All projects"><span class="logo">S</span><span class="brand-name">Stobite <b>Compact</b></span></button>
   <div class="transport">
     <button class="tbtn" id="btnHome" title="Go to start (Home)" data-ic="start"></button>
     <button class="tbtn" id="btnBack" title="Back 5 seconds (,)" data-ic="back"></button>
@@ -22,6 +22,7 @@
     <div class="clock" id="clock">00:00:00.000</div>
   </div>
   <nav class="tabs" id="tabs">
+    <button data-view="home">Projects</button>
     <button data-view="edit" class="on">Edit</button>
     <button data-view="mixer">Mixer</button>
     <button data-view="routing">Routing</button>
@@ -39,6 +40,11 @@
 </header>
 
 <main>
+  <!-- ======================= HOME / PROJECTS ======================= -->
+  <section id="view-home" class="view">
+    <div class="home" id="home"></div>
+  </section>
+
   <!-- ======================= EDIT ======================= -->
   <section id="view-edit" class="view on">
     <div class="toolbar">
@@ -175,5 +181,6 @@
 <script src="/static/guide.js"></script>
 <script src="/static/console.js"></script>
 <script src="/static/setup.js"></script>
+<script src="/static/home.js"></script>
 </body>
 </html>

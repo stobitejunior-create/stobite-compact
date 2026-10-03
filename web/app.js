@@ -215,8 +215,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
 
 window.addEventListener('load', () => {
-  let v = 'edit';
-  try { v = localStorage.getItem('stobite.view') || (innerWidth < 760 ? 'mixer' : 'edit'); } catch (e) { }
-  showView(v);
+  // the app opens on the projects page; a phone remote opens straight on the mixer
+  showView(innerWidth < 760 ? 'mixer' : 'home');
   connect();
 });

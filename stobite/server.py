@@ -300,6 +300,24 @@ class App:
                 e.new_session(body.get("name") or time.strftime("Service %Y-%m-%d"))
                 await self._push("mixer")
                 return web.json_response({"ok": True})
+            if name == "projects":
+                from .session import list_sessions
+                items = list_sessions(detail=True)
+                for it in items:
+                    it["current"] = it["name"] == e.session.name
+                return web.json_response(items)
+            if name == "session-delete":
+                from .session import delete_session, list_sessions
+                if body["name"] == e.session.name:
+                    # can't remove the open project from under the engine: move to another (or a new) one first
+                    others = [x["name"] for x in list_sessions() if x["name"] != body["name"]]
+                    if others:
+                        e.open_session(others[0])
+                    else:
+                        e.new_session(time.strftime("Service %Y-%m-%d"))
+                    await self._push("mixer")
+                where = delete_session(body["name"])
+                return web.json_response({"ok": True, "where": where})
             if name == "session-open":
                 e.open_session(body["name"])
                 return web.json_response({"ok": True})

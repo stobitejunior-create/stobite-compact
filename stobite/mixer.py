@@ -18,6 +18,7 @@ import numpy as np
 
 from . import dsp
 from . import chain
+from .inputs import parse_dev
 from .procs import Ducker, ReverbFX, StereoDelay
 
 try:
@@ -450,13 +451,21 @@ class Mixer:
         self.master_limited = any(m.get("type") == "limiter" and m.get("on", True) for m in st["master"].get("chain") or [])
 
     # ------------------------------------------------------------- input routing
-    def src_index(self, n_in, n_cable=N_CABLES * 2):
-        """Column of the combined (inputs + cable returns) array for each channel; -1 = silent."""
-        key = (n_in, n_cable)
+    def src_index(self, n_in, n_cable=N_CABLES * 2, extra=None):
+        """Column of the combined array (main inputs + cable returns + other devices) for each channel; -1 = silent.
+        extra: {device key: (offset, channels)} for the other input devices currently open."""
+        extra = extra or {}
+        key = (n_in, n_cable, tuple(sorted((k, v) for k, v in extra.items())))
         idx = self._src_cache.get(key)
         if idx is None:
             out = []
             for spec in self.c["inputs"]:
+                dev = parse_dev(spec)
+                if dev is not None:
+                    k, ch = dev
+                    o = extra.get(k)
+                    out.append(n_in + n_cable + o[0] + ch if o is not None and 0 <= ch < o[1] else -1)
+                    continue
                 try:
                     kind, num = spec.split(":")
                     num = int(num)
@@ -473,12 +482,19 @@ class Mixer:
             self._src_cache[key] = idx
         return idx
 
-    def route_inputs(self, live, cables):
+    def devices_in_use(self):
+        """Other input devices some channel is set to (so their streams get opened)."""
+        return {d[0] for d in (parse_dev(c.get("input")) for c in self.state["channels"]) if d}
+
+    def route_inputs(self, live, cables, extra=None, extra_map=None):
         """Raw, untouched input for every channel (what gets recorded)."""
         frames = live.shape[0]
         n_in = live.shape[1]
-        idx = self.src_index(n_in)
-        allsrc = np.concatenate([live, cables], axis=1) if cables is not None else live
+        if cables is None:
+            cables = np.zeros((frames, N_CABLES * 2), np.float32)
+        idx = self.src_index(n_in, cables.shape[1], extra_map if extra is not None else None)
+        parts = [live, cables] + ([extra] if extra is not None else [])
+        allsrc = np.concatenate(parts, axis=1)
         safe = np.clip(idx, 0, allsrc.shape[1] - 1)
         x = allsrc[:, safe].astype(np.float32)
         silent = (idx < 0) | (idx >= allsrc.shape[1])

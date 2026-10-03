@@ -25,15 +25,56 @@ def safe_name(name):
     return re.sub(r"[^\w\- ]+", "", name).strip()[:60] or "Untitled"
 
 
-def list_sessions():
+def list_sessions(detail=False):
     root = os.path.join(home_dir(), "Sessions")
     out = []
     for n in sorted(os.listdir(root)):
         p = os.path.join(root, n, "session.json")
-        if os.path.exists(p):
-            out.append({"name": n, "modified": os.path.getmtime(p)})
+        if not os.path.exists(p):
+            continue
+        item = {"name": n, "modified": os.path.getmtime(p)}
+        if detail:
+            try:
+                with open(p) as f:
+                    data = json.load(f)
+                clips = data.get("clips", [])
+                sr = data.get("sr", 48000) or 48000
+                item["seconds"] = round(max((c["start"] + c["length"] for c in clips), default=0) / sr, 1)
+                item["tracks"] = len({c["track"] for c in clips})
+                item["markers"] = len(data.get("markers", []))
+            except Exception:
+                pass
+            size = 0
+            for dp, _, files in os.walk(os.path.join(root, n)):
+                for fn in files:
+                    try:
+                        size += os.path.getsize(os.path.join(dp, fn))
+                    except OSError:
+                        pass
+            item["bytes"] = size
+        out.append(item)
     out.sort(key=lambda s: -s["modified"])
     return out
+
+
+def delete_session(name):
+    """Move a project to the Trash (Mac) or delete it (elsewhere)."""
+    import shutil
+    import sys
+    path = os.path.join(home_dir(), "Sessions", safe_name(name))
+    if not os.path.isdir(path):
+        raise RuntimeError("That project no longer exists.")
+    if sys.platform == "darwin":
+        trash = os.path.expanduser("~/.Trash")
+        dest = os.path.join(trash, os.path.basename(path))
+        k = 2
+        while os.path.exists(dest):
+            dest = os.path.join(trash, f"{os.path.basename(path)} {k}")
+            k += 1
+        shutil.move(path, dest)
+        return "trash"
+    shutil.rmtree(path)
+    return "deleted"
 
 
 class Session:

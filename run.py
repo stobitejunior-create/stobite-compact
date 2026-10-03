@@ -46,6 +46,7 @@ def shutdown(holder):
             e.stop()          # finalises any recording in progress
             e.save()
             e.cables.stop()
+            e.extra.stop()
             if e.stream is not None:
                 try:
                     e.stream.abort()   # abort returns at once; stop() waits for buffers to drain

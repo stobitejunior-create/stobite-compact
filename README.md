@@ -61,6 +61,14 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 - **A channel's sound:** in a channel's editor, *Save this sound…* stores its processing chain, sends and routing as a `.stobite-channel` file in your sound library. *Load a sound…* puts it on any channel, so your piano sound works on any piano.
 - **The whole mix:** Mixer → *Mix settings* → Save makes a folder with one file per channel plus one for the buses, effects and master. Apply matches channels by name (then instrument, then position), lets you check the matches, then applies them.
 
+## Projects home page
+
+The app opens on **Projects**: every service you've recorded, with when it was last changed, its length, track count and size. Open or Delete each one (on a Mac, Delete moves it to the Trash), start a **New project**, or **Open a project file** (`.stobite`) brought from another computer. Click the logo to come back here.
+
+## Any microphone as an input
+
+A channel's input can be a WING input, a virtual cable, or **any other microphone or interface the computer sees** (built-in mic, USB mic, webcam, a second interface). These have their own clock, so keep the important sources on the WING.
+
 ## Processing chains
 
 Every channel, bus and the master has an ordered chain: add any processor as many times as you like, drag to reorder, and bypass, duplicate or remove each one. The order is the order the sound goes through.

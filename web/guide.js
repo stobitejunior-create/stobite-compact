@@ -13,6 +13,7 @@
       <p>On a Mac, closing the window only hides it (like Notes): recording and audio keep running. Click the Dock icon to bring it back; Quit (⌘Q) saves and exits.</p>`],
     ['input', 'Inputs, raw recording and channel order', `
       <p>One USB cable from the WING carries up to 48 channels. Each channel strip has an <b>Input</b> (WING USB 1–48 or a virtual cable). Change it to point any strip at any input, and drag strips to reorder them. The WING never changes.</p>
+      <p><b>Other microphones:</b> a channel's Input menu also lists every other microphone or interface the computer can see (built-in mic, USB mic, webcam, a second interface), marked 🎤. Each is opened only while a channel uses it. It runs on its own clock, so it is great for an extra ambience or backup mic, but keep the main sources on the WING.</p>
       <p><b>Recording is always raw.</b> The app writes each channel's input to disk <i>before</i> trim, EQ, dynamics or faders. You can always go back and remix from untouched audio. To keep the WING's own faders out of it, set its USB outputs to send the channel <b>direct outs pre-fader</b> (Setup has the steps).</p>
       <p><b>Copy names from the WING</b> (Setup) reads the console's channel names and colours over the network. It only reads; it never sends anything back.</p>
       <p><b>Gain / trim</b> is the first knob a signal meets. Aim for channel peaks around −18 to −10 dBFS. Healthy level here makes every processor after it behave predictably.</p>`],
