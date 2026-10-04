@@ -77,10 +77,17 @@ def delete_session(name):
     return "deleted"
 
 
+def scratch_dir():
+    return os.path.join(home_dir(), ".scratch", "Untitled")
+
+
 class Session:
-    def __init__(self, name, sr, nch):
-        self.name = safe_name(name)
-        self.dir = os.path.join(home_dir(), "Sessions", self.name)
+    def __init__(self, name, sr, nch, scratch=False):
+        # scratch: the hidden, unnamed project used while no project is open. It is never listed;
+        # the moment audio is recorded or imported into it, it becomes a real project.
+        self.scratch = scratch
+        self.name = "No project" if scratch else safe_name(name)
+        self.dir = scratch_dir() if scratch else os.path.join(home_dir(), "Sessions", self.name)
         os.makedirs(os.path.join(self.dir, "audio"), exist_ok=True)
         os.makedirs(os.path.join(self.dir, "peaks"), exist_ok=True)
         self.sr, self.nch = sr, nch
@@ -131,7 +138,7 @@ class Session:
 
     def public(self):
         with self.lock:
-            return {"name": self.name, "sr": self.sr, "nch": self.nch, "clips": self.clips,
+            return {"name": self.name, "scratch": self.scratch, "sr": self.sr, "nch": self.nch, "clips": self.clips,
                     "markers": self.markers, "armed": self.armed, "length": self.length(),
                     "automation": self.automation, "automode": self.automode, "loop": self.loop,
                     "canUndo": bool(self.undo_stack), "canRedo": bool(self.redo_stack),

@@ -164,7 +164,7 @@ on('info', () => {
   if (i.status === 'starting') toast('Starting audio… if macOS asks for microphone access, click Allow — that is how it hears the WING.');
   $('#audioDot').title = i.status === 'running' ? `Audio running: in ${i.inName} (${i.devIns} ch), out ${i.outName}` : 'Audio: ' + (i.error || i.status);
 });
-on('session', () => { $('#sessName').textContent = S.session.name; });
+on('session', () => { $('#sessName').textContent = S.session.name; $('#sessName').classList.toggle('none', !!S.session.scratch); });
 
 // ------------------------------------------------------------ views
 const tabInd = h('span', { class: 'ind' });

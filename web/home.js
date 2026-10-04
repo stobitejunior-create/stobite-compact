@@ -64,7 +64,7 @@
     const file = h('input', { type: 'file', accept: '.stobite', hidden: true, onchange: async e => { const f = e.target.files[0]; e.target.value = ''; if (f) { await importProject(f); hideWelcome(); showView('edit'); } } });
     const search = h('input', { class: 'wl-search', placeholder: 'Search projects…', value: query, oninput: e => { query = e.target.value; renderGrid(); } });
     const grid = h('div', { class: 'proj-grid' });
-    const current = S.session?.name;
+    const current = S.session && !S.session.scratch ? S.session.name : null;   // null: no project open
     const side = h('aside', { class: 'wl-side' },
       h('div', { class: 'wl-brand' }, h('span', { class: 'logo big' }, 'S'), h('div', {}, h('div', { class: 'wl-title' }, 'Stobite ', h('b', {}, 'Compact')), h('div', { class: 'hint' }, 'Record, mix and master the service'))),
       h('button', { class: 'wl-act accent', onclick: newProject }, icon('plus', 18), h('span', {}, h('b', {}, 'New project'), h('small', {}, 'Start a new service'))),
@@ -94,6 +94,7 @@
     if (innerWidth > 760) setTimeout(() => search.focus(), 60);
   }
 
+  on('session', () => { if (welcomeOpen()) load(); });
   $('#brandHome').onclick = () => showWelcome(true);
   $('#sessName').onclick = () => showWelcome(true);
   $('#sessName').title = 'Switch project (Ctrl/Cmd+O)';
@@ -101,6 +102,6 @@
     const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
     if (mod && k === 'o') { e.preventDefault(); showWelcome(true); }
     else if (mod && k === 'n') { e.preventDefault(); newProject(); }
-    else if (e.key === 'Escape' && welcomeOpen() && manual && $('#modal').hidden) hideWelcome();
+    else if (e.key === 'Escape' && welcomeOpen() && manual && S.session && !S.session.scratch && $('#modal').hidden) hideWelcome();
   }, true);
 })();

@@ -18,7 +18,7 @@ import sounddevice as sd
 from .mixer import Mixer, Insert
 from .cables import CableIO
 from .inputs import ExtraInputs
-from .session import Session, Reader, Recorder, home_dir, list_sessions
+from .session import Session, Reader, Recorder, home_dir, list_sessions, safe_name, scratch_dir
 
 DEFAULT_CFG = {
     "input": None, "output": None, "sr": 48000, "block": 256, "nch": 48,
@@ -353,9 +353,11 @@ class Engine:
         self.last_auto = None
         name = self.cfg.get("session")
         try:
-            self.open_session(name) if name else self.new_session("First Session")
+            if not name:
+                raise FileNotFoundError
+            self.open_session(name)
         except Exception:
-            self.new_session(time.strftime("Session %Y-%m-%d"))
+            self.open_scratch()   # no project yet (or it was deleted): nothing is created until it's needed
         threading.Thread(target=self._autosave, daemon=True).start()
         threading.Thread(target=self._auto_loop, daemon=True).start()
         threading.Thread(target=self._extra_loop, daemon=True).start()
@@ -666,6 +668,7 @@ class Engine:
             return
         if self.stream is None or self.dev_ins == 0:
             raise RuntimeError("No input device running - pick your WING in Setup first")
+        self.promote()
         self.playing = False
         start = self.session.length() if self.cfg.get("rec_at_end", True) and self.playhead < self.session.length() else self.playhead
         self.playhead = start
@@ -695,6 +698,40 @@ class Engine:
         self.playhead = 0
         s.save(self.mixer.snapshot())
         self.cfg["session"] = s.name
+        self.save_cfg()
+        self.emit("session")
+
+    def open_scratch(self):
+        """No project open. Uses a hidden, empty project that is never listed."""
+        if self.recording:
+            raise RuntimeError("Stop recording first")
+        self.stop()
+        if self.session and not self.session.scratch:
+            self.save()
+        shutil.rmtree(scratch_dir(), ignore_errors=True)   # only ever holds an empty, unsaved project
+        self.session = Session("", self.sr, self.nch, scratch=True)
+        self.playhead = 0
+        self.cfg["session"] = None
+        self.save_cfg()
+        self.emit("session")
+
+    def promote(self):
+        """Audio is about to go into the hidden project: make it a real one first, so nothing
+        recorded or imported can ever be lost."""
+        s = self.session
+        if s is None or not s.scratch:
+            return
+        base = safe_name(time.strftime("Service %Y-%m-%d"))
+        root = os.path.join(home_dir(), "Sessions")
+        name, k = base, 2
+        while os.path.exists(os.path.join(root, name)):
+            name, k = f"{base} {k}", k + 1
+        s.save(self.mixer.snapshot())
+        shutil.move(s.dir, os.path.join(root, name))
+        with s.lock:
+            s.scratch, s.name, s.dir = False, name, os.path.join(root, name)
+        s.save(self.mixer.snapshot())
+        self.cfg["session"] = name
         self.save_cfg()
         self.emit("session")
 

@@ -519,3 +519,4 @@ details summary { cursor: pointer; color: var(--dim); }
 
 .wing-lock { margin: 8px 12px; padding: 10px 12px; border-radius: 8px; background: #3a2a10; border: 1px solid #6b4d1a; color: #ffd79a; font-size: 12.5px; line-height: 1.5; }
 .wing-lock b { color: #ffe7c0; }
+#sessName.none { color: var(--faint); font-style: italic; }

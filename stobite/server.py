@@ -306,18 +306,14 @@ class App:
                 from .session import list_sessions
                 items = list_sessions(detail=True)
                 for it in items:
-                    it["current"] = it["name"] == e.session.name
+                    it["current"] = not e.session.scratch and it["name"] == e.session.name
                 return web.json_response(items)
             if name == "session-delete":
                 from .session import delete_session, list_sessions
-                if body["name"] == e.session.name:
-                    # can't remove the open project from under the engine: move to another (or a new) one first
-                    others = [x["name"] for x in list_sessions() if x["name"] != body["name"]]
-                    if others:
-                        e.open_session(others[0])
-                    else:
-                        e.new_session(time.strftime("Service %Y-%m-%d"))
-                    await self._push("mixer")
+                if body["name"] == e.session.name and not e.session.scratch:
+                    # deleting the open project: close it first, leaving no project open
+                    e.open_scratch()
+                    await self._push("session")
                 where = delete_session(body["name"])
                 return web.json_response({"ok": True, "where": where})
             if name == "session-open":
@@ -521,6 +517,7 @@ class App:
                 reader = await request.multipart()
                 track = int(q.get("track", 0))
                 start = int(q.get("start", 0))
+                e.promote()   # importing into "no project" makes a real project first
                 async for part in reader:
                     if part.filename:
                         suffix = os.path.splitext(part.filename)[1]
