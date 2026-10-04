@@ -5,7 +5,9 @@
     if (!S.info) return;
     const i = S.info, c = i.cfg;
     try { devices = await api('devices'); } catch (e) { }
-    const box = $('#setup'); box.innerHTML = '';
+    lastShown = shown();
+    const box = $('#setup'), keepScroll = box.scrollTop; box.innerHTML = '';
+    requestAnimationFrame(() => { box.scrollTop = keepScroll; });
     const devName = d => `${d.name} (${d.api})`;
     const sel = (kind) => {
       const key = kind === 'input' ? 'ins' : 'outs';
@@ -152,6 +154,10 @@
     toast('Saved');
   }
   async function refresh() { S.info = await api('info'); emit('info'); }
-  on('info', () => { if (S.view === 'setup') render(); });
+  // Redraw only when something this page shows has changed: a full redraw resets dropdowns,
+  // the scroll position and anything half-typed.
+  const shown = () => { const i = S.info || {}; return JSON.stringify([i.status, i.error, i.audioNote, i.devIns, i.devOuts, i.inName, i.outName, i.inIsWing, i.sr, i.cfg, i.extraInputs, i.remote, i.cables, i.wing && i.wing.ip]); };
+  let lastShown = '';
+  on('info', () => { if (S.view !== 'setup') return; const k = shown(); if (k !== lastShown) render(); });
   on('view', v => v === 'setup' && refresh());
 })();

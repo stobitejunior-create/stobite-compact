@@ -72,6 +72,34 @@ def com_init():
     _com.ok = True
 
 
+def device_fingerprint():
+    """A cheap answer to "has an audio device been plugged in or removed?", asked of the
+    operating system directly. (Re-scanning through PortAudio means restarting the audio.)
+    None when the system can't tell us."""
+    try:
+        import ctypes
+        if sys.platform == "darwin":
+            ca = ctypes.CDLL("/System/Library/Frameworks/CoreAudio.framework/CoreAudio")
+
+            class Addr(ctypes.Structure):
+                _fields_ = [("sel", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("elem", ctypes.c_uint32)]
+            four = lambda t: int.from_bytes(t.encode(), "big")
+            addr = Addr(four("dev#"), four("glob"), 0)
+            size = ctypes.c_uint32(0)
+            if ca.AudioObjectGetPropertyDataSize(1, ctypes.byref(addr), 0, None, ctypes.byref(size)) != 0:
+                return None
+            ids = (ctypes.c_uint32 * (size.value // 4))()
+            if ca.AudioObjectGetPropertyData(1, ctypes.byref(addr), 0, None, ctypes.byref(size), ids) != 0:
+                return None
+            return tuple(ids)
+        if sys.platform == "win32":
+            w = ctypes.windll.winmm
+            return (w.waveInGetNumDevs(), w.waveOutGetNumDevs())
+    except Exception:
+        return None
+    return None
+
+
 API_RANK = {"ASIO": 0, "Windows WASAPI": 1, "Windows WDM-KS": 2, "MME": 3, "Windows DirectSound": 4}
 
 
@@ -695,18 +723,25 @@ class Engine:
             self.dirty = False
 
     def _device_watch(self):
-        """While no main input is connected, look for the WING (or the chosen interface) every few
-        seconds and connect as soon as it appears. Only while nothing is playing or recording:
-        refreshing the device list briefly restarts the audio."""
+        """While no main input is connected, connect the WING (or the chosen interface) as soon
+        as it is plugged in. The audio is only restarted when the system's device list actually
+        changes, and never while playing or recording."""
         com_init()
-        fails = 0
+        last = device_fingerprint()
+        quiet_since = time.time()
         while True:
-            time.sleep(4 if fails < 3 else 20)   # a driver that keeps failing is retried less often
+            time.sleep(2)
             try:
-                if self.dev_ins > 0 or self.playing or self.recording or self.status == "starting":
+                fp = device_fingerprint()
+                changed = fp != last
+                if fp is None:   # can't ask the system cheaply: fall back to an occasional re-scan
+                    changed = time.time() - quiet_since > 30
+                if not changed or self.dev_ins > 0 or self.playing or self.recording or self.status == "starting":
+                    if self.dev_ins > 0:
+                        last = fp      # connected: just keep the list current
                     continue
-                if not (self.asleep or self.stream is None):
-                    continue
+                last, quiet_since = fp, time.time()
+                time.sleep(1.5)  # a device that was just plugged in needs a moment to be ready
                 self.stop_audio()
                 self.cables.stop()
                 self.extra.stop()
@@ -718,12 +753,7 @@ class Engine:
                     pass
                 self.start_audio()
                 if self.dev_ins > 0:
-                    fails = 0
                     print(f"Connected to {self.in_name}", flush=True)
-                elif input_candidates(self.cfg.get("input")):
-                    fails += 1     # the WING is listed but won't open
-                else:
-                    fails = 0
             except Exception:
                 traceback.print_exc()
 

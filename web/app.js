@@ -193,6 +193,7 @@ fetch('/api/catalog').then(r => r.json()).then(c => { window.CATALOG = c; emit('
 // ------------------------------------------------------------ keys
 document.addEventListener('keydown', e => {
   if (e.target.matches('input, select, textarea')) return;
+  if (window.welcomeOpen && welcomeOpen()) return;   // the welcome screen has its own keys
   const mod = e.metaKey || e.ctrlKey;
   if (e.code === 'Space') { e.preventDefault(); tr('toggle'); }
   else if (mod && e.key.toLowerCase() === 'z') {
@@ -214,7 +215,8 @@ document.addEventListener('keydown', e => {
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
 
 window.addEventListener('load', () => {
-  // the app opens on the projects page; a phone remote opens straight on the mixer
-  showView(innerWidth < 760 ? 'mixer' : 'home');
+  // the app opens on the welcome screen (like Logic); a phone remote opens straight on the mixer
+  showView(innerWidth < 760 ? 'mixer' : 'edit');
+  if (innerWidth >= 760) showWelcome(false);
   connect();
 });

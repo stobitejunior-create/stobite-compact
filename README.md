@@ -62,7 +62,7 @@ Stobite Compact is a **second, independent mixer** for the livestream. The WING 
 
 ## Projects home page
 
-The app opens on **Projects**: every service you've recorded, with when it was last changed, its length, track count and size. Open or Delete each one (on a Mac, Delete moves it to the Trash), start a **New project**, or **Open a project file** (`.stobite`) brought from another computer. Click the logo to come back here.
+The app opens on a **welcome screen** (like Logic or CapCut) that closes once a project is open. It lists every service you've recorded, with when it was last changed, its length, track count and size. Open or Delete each one (on a Mac, Delete moves it to the Trash), start a **New project**, or **Open a project file** (`.stobite`) brought from another computer. To switch project later, click the logo or the project name at the top right, or press Ctrl/Cmd+O (Ctrl/Cmd+N makes a new one).
 
 ## Any microphone as an input
 
