@@ -55,6 +55,40 @@ def list_devices():
     return out
 
 
+_com = threading.local()
+
+
+def com_init():
+    """Windows: ASIO drivers are COM objects, and COM must be switched on in every thread that
+    opens or closes an audio stream. PortAudio only does that in the thread that first loaded it,
+    so opening the WING from any other thread fails with "Failed to load ASIO driver"."""
+    if sys.platform != "win32" or getattr(_com, "ok", False):
+        return
+    try:
+        import ctypes
+        ctypes.windll.ole32.CoInitializeEx(None, 0x2)  # COINIT_APARTMENTTHREADED, as ASIO expects
+    except Exception:
+        pass
+    _com.ok = True
+
+
+API_RANK = {"ASIO": 0, "Windows WASAPI": 1, "Windows WDM-KS": 2, "MME": 3, "Windows DirectSound": 4}
+
+
+def explain_audio_error(msg, api=""):
+    """Turn PortAudio's error into what to check."""
+    m = str(msg)
+    if "ASIO" in m or api == "ASIO":
+        if "load" in m.lower() or "-9999" in m:
+            return (m + " | Check: 1) the USB cable runs from the WING's back-panel USB port to this PC (the network cable"
+                    " carries control only, not audio); 2) no other program is using the WING's ASIO driver"
+                    " (OBS, another DAW, a streaming app): close it; 3) the WING USB driver is installed, then"
+                    " unplug/replug the USB cable and press Restart audio.")
+    if "sample rate" in m.lower():
+        return m + " | The WING and this app must use the same sample rate (48 kHz is the WING default)."
+    return m
+
+
 SLEEP_LEVEL = 3.2e-4  # -70 dBFS: any input above this wakes the engine instantly
 
 
@@ -138,6 +172,45 @@ def find_device(name, kind):
         return idx if idx is not None and idx >= 0 else None
     except Exception:
         return None
+
+
+def pair_output(ind, outd):
+    """An output that can share a stream with input device `ind`."""
+    if ind is None:
+        return outd
+    devs = list_devices()
+    di = devs[ind]
+    if outd is not None and devs[outd]["api"] == di["api"] and (di["api"] != "ASIO" or outd == ind):
+        return outd
+    if di["api"] == "ASIO":
+        return ind if di["outs"] > 0 else None
+    same = [d for d in devs if d["api"] == di["api"] and d["outs"] > 0]
+    wing = [d for d in same if d["wing"]]
+    if wing:
+        return wing[0]["id"]
+    try:
+        api_i = [a["name"] for a in sd.query_hostapis()].index(di["api"])
+        dflt = sd.query_hostapis(api_i)["default_output_device"]
+        if dflt is not None and dflt >= 0:
+            return dflt
+    except Exception:
+        pass
+    return same[0]["id"] if same else None
+
+
+def input_candidates(name):
+    """Main input devices to try, best first. If the WING's ASIO driver won't open, the WING's
+    other Windows drivers (WASAPI, WDM-KS, MME) are tried before giving up."""
+    first = find_device(name, "input")
+    if first is None:
+        return []
+    devs = list_devices()
+    picked = devs[first]
+    if not picked["wing"]:
+        return [first]
+    rest = sorted((d for d in devs if d["wing"] and d["ins"] > 0 and d["id"] != first),
+                  key=lambda d: (API_RANK.get(d["api"], 9), -d["ins"]))
+    return [first] + [d["id"] for d in rest]
 
 
 class Feeder:
@@ -274,23 +347,51 @@ class Engine:
 
     # ------------------------------------------------------------- devices
     def start_audio(self):
+        com_init()
         self.stop_audio()
+        self.audio_note = ""
         try:
-            ind = find_device(self.cfg.get("input"), "input")
-            outd = find_device(self.cfg.get("output"), "output")
-            if outd is None:
-                raise RuntimeError("No output device found")
-            self.dev_ins = sd.query_devices(ind)["max_input_channels"] if ind is not None else 0
-            self.dev_outs = sd.query_devices(outd)["max_output_channels"]
             sr = int(self.cfg["sr"])
-            kw = dict(samplerate=sr, blocksize=int(self.cfg["block"]), dtype="float32",
-                      latency="low", callback=self._callback)
-            if ind is not None and self.dev_ins > 0:
-                self.stream = sd.Stream(device=(ind, outd), channels=(self.dev_ins, self.dev_outs), **kw)
-            else:
+            kw = dict(samplerate=sr, blocksize=int(self.cfg["block"]), dtype="float32", latency="low")
+            want_out = find_device(self.cfg.get("output"), "output")
+            failures = []
+            ind = outd = None
+            for cand in input_candidates(self.cfg.get("input")):
+                o = pair_output(cand, want_out)
+                if o is None:
+                    continue
+                try:
+                    nin = sd.query_devices(cand)["max_input_channels"]
+                    nout = sd.query_devices(o)["max_output_channels"]
+                    self.stream = sd.Stream(device=(cand, o), channels=(nin, nout), callback=self._callback, **kw)
+                    ind, outd, self.dev_ins, self.dev_outs = cand, o, nin, nout
+                    break
+                except Exception as ex:
+                    api = list_devices()[cand]["api"]
+                    failures.append(f"{sd.query_devices(cand)['name']} ({api}): {ex}")
+                    print("Audio input failed:", failures[-1], flush=True)
+                    self.stream = None
+            if self.stream is None:
+                # no main input: keep playback and the mixer working on the output alone
+                outd = want_out
+                if outd is not None and list_devices()[outd]["api"] == "ASIO" and failures:
+                    outd = None   # the ASIO driver is the thing that failed: use Windows' normal output
+                if outd is None:
+                    try:
+                        outd = sd.default.device[1]
+                        outd = outd if outd is not None and outd >= 0 else None
+                    except Exception:
+                        outd = None
+                if outd is None:
+                    raise RuntimeError(explain_audio_error(failures[0]) if failures else "No output device found")
+                self.dev_ins = 0
+                self.dev_outs = sd.query_devices(outd)["max_output_channels"]
                 self.stream = sd.OutputStream(device=outd, channels=self.dev_outs,
-                                              callback=lambda o, f, t, s: self._callback(None, o, f, t, s),
-                                              **{k: v for k, v in kw.items() if k != "callback"})
+                                              callback=lambda o_, f, t, st: self._callback(None, o_, f, t, st),
+                                              **kw)
+            elif failures:
+                self.audio_note = (f"The WING's first choice of driver failed, so it is connected through "
+                                   f"{list_devices()[ind]['api']} instead ({self.dev_ins} channels). " + explain_audio_error(failures[0]))
             if sr != self.sr:
                 self.sr = sr
                 self.mixer = Mixer(self.nch, sr, self.mixer.snapshot())
@@ -299,10 +400,14 @@ class Engine:
             self.in_is_wing = bool(self.in_name) and any(k in self.in_name.upper() for k in ("WING", "BEHRINGER"))
             self.out_name = sd.query_devices(outd)["name"]
             self.status, self.error = "running", ""
+            if failures and ind is None:
+                # output works but the WING didn't open: say why, loudly
+                self.error = explain_audio_error(failures[0])
+                self.audio_note = "Playback works, but no channels are coming in. " + self.error
             self.start_cables()
         except Exception as ex:
             self.stream = None
-            self.status, self.error = "error", str(ex)
+            self.status, self.error = "error", explain_audio_error(ex)
         self.emit("status")
 
     def start_cables(self):
@@ -311,6 +416,7 @@ class Engine:
         self.cables.start(co, ci, self.sr, int(self.cfg["block"]))
 
     def stop_audio(self):
+        com_init()
         if self.stream is not None:
             try:
                 self.stream.stop()
@@ -592,8 +698,10 @@ class Engine:
         """While no main input is connected, look for the WING (or the chosen interface) every few
         seconds and connect as soon as it appears. Only while nothing is playing or recording:
         refreshing the device list briefly restarts the audio."""
+        com_init()
+        fails = 0
         while True:
-            time.sleep(4)
+            time.sleep(4 if fails < 3 else 20)   # a driver that keeps failing is retried less often
             try:
                 if self.dev_ins > 0 or self.playing or self.recording or self.status == "starting":
                     continue
@@ -610,12 +718,18 @@ class Engine:
                     pass
                 self.start_audio()
                 if self.dev_ins > 0:
+                    fails = 0
                     print(f"Connected to {self.in_name}", flush=True)
+                elif input_candidates(self.cfg.get("input")):
+                    fails += 1     # the WING is listed but won't open
+                else:
+                    fails = 0
             except Exception:
                 traceback.print_exc()
 
     def _extra_loop(self):
         """Open / close other input devices as channels start or stop using them."""
+        com_init()
         last = None
         while True:
             time.sleep(1.0)
@@ -796,5 +910,5 @@ class Engine:
                 "nIn": self.dev_ins, "inIsWing": bool(getattr(self, "in_is_wing", False)),
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,
                 "devIns": self.dev_ins, "devOuts": self.dev_outs,
-                "inName": getattr(self, "in_name", ""), "outName": getattr(self, "out_name", ""),
+                "inName": getattr(self, "in_name", ""), "audioNote": getattr(self, "audio_note", ""), "outName": getattr(self, "out_name", ""),
                 "home": home_dir(), "sessions": list_sessions()}

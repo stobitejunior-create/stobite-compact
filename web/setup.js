@@ -25,6 +25,7 @@
 
     box.append(
       h('div', { class: 'card' }, h('h3', {}, 'Audio interface'), statusLine,
+        i.audioNote ? h('p', { class: 'warn-line' }, i.audioNote) : null,
         i.devIns && i.inIsWing ? h('p', { class: 'ok' }, `★ WING connected: ${i.devIns} inputs`) :
           i.devIns ? h('p', { class: 'ok' }, `Main inputs: ${i.inName} (${i.devIns})`) :
           h('p', { class: 'warn-line' }, 'No WING connected, so channels set to WING inputs are silent (your computer’s microphone is never used unless you pick it on a channel). Plug in the WING and it connects by itself within a few seconds.'),
@@ -50,7 +51,7 @@
       cablesCard(i, devices),
 
       h('div', { class: 'card' }, h('h3', {}, 'WING console control (optional)'),
-        h('p', {}, 'Stobite Compact never changes your WING. If you ever want to move the WING\'s own faders from a phone, you can turn on the WING tab here.'),
+        h('p', {}, 'Stobite Compact never changes your WING. If you ever want to move the WING\'s own faders from a phone, you can turn on the WING tab here. If the faders snap back, the WING\'s OSC Remote Lock is on (WING: SETUP → REMOTE).'),
         h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!c.show_wing, onchange: e => save({ show_wing: e.target.checked }) }), 'Show the WING tab (remote-controls the console)')),
 
       h('div', { class: 'card' }, h('h3', {}, 'Phone remote'),

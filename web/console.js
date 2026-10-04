@@ -2,6 +2,27 @@
 (() => {
   const BANKS = { ch: 40, aux: 8, bus: 16, main: 4 };
   let bank = 'ch', ctl = new Map(), timer = null;
+  // Did the WING take the change? It answers reads even when its OSC Remote Lock throws writes away,
+  // so compare what we asked for with what it reports back shortly after.
+  const pending = new Map();
+  const lockNote = h('div', { class: 'wing-lock', hidden: true },
+    h('b', {}, 'The WING is ignoring changes from this app. '),
+    'It reads fine, but its ', h('b', {}, 'OSC Remote Lock'), ' is on, so every change is thrown away and the fader snaps back. ',
+    'To allow control, on the WING press ', h('b', {}, 'SETUP → REMOTE'), ' and turn ', h('b', {}, 'Remote Lock (OSC)'), ' off. ',
+    'Leave it on if you want the console protected: this app never needs it for recording or the broadcast mix.');
+  $('#wingStrips').before(lockNote);
+  function sent(addr, v) {
+    pending.set(addr, { v, t: performance.now() });
+    clearTimeout(sent.timer);
+    sent.timer = setTimeout(() => send({ t: 'wing', a: 'query', addrs: [...pending.keys()] }), 700);
+  }
+  function checkBack(addr, val) {
+    const p = pending.get(addr);
+    if (!p || performance.now() - p.t < 300) return;
+    pending.delete(addr);
+    const same = addr.endsWith('/fdr') ? (Math.abs(val - p.v) < 0.5 || (val <= -89 && p.v <= -89)) : (!!val === !!p.v);
+    lockNote.hidden = same;
+  }
 
   function build() {
     const box = $('#wingStrips'); box.innerHTML = ''; ctl.clear();
@@ -9,8 +30,8 @@
       const base = `/${bank}/${n}`;
       const name = h('div', { class: 'sname' }, S.wing[base + '/name'] || `${bank.toUpperCase()} ${n}`);
       const db = h('div', { class: 'db' }, fmt.db(S.wing[base + '/fdr'] ?? -90));
-      const fader = Fader({ value: S.wing[base + '/fdr'] ?? -90, onChange: v => { send({ t: 'wing', a: 'set', addr: base + '/fdr', v }); db.textContent = fmt.db(v); } });
-      const mute = h('button', { class: 'tog m' + (S.wing[base + '/mute'] ? ' on' : ''), onclick: () => { const v = S.wing[base + '/mute'] ? 0 : 1; S.wing[base + '/mute'] = v; mute.classList.toggle('on', !!v); send({ t: 'wing', a: 'set', addr: base + '/mute', v }); } }, 'MUTE');
+      const fader = Fader({ value: S.wing[base + '/fdr'] ?? -90, onChange: v => { send({ t: 'wing', a: 'set', addr: base + '/fdr', v }); sent(base + '/fdr', v); db.textContent = fmt.db(v); } });
+      const mute = h('button', { class: 'tog m' + (S.wing[base + '/mute'] ? ' on' : ''), onclick: () => { const v = S.wing[base + '/mute'] ? 0 : 1; S.wing[base + '/mute'] = v; mute.classList.toggle('on', !!v); send({ t: 'wing', a: 'set', addr: base + '/mute', v }); sent(base + '/mute', v); } }, 'MUTE');
       box.append(h('div', { class: 'wstrip' }, name, mute, h('div', { class: 'fz' }, fader.el), db));
       ctl.set(base + '/fdr', v => { fader.set(v); db.textContent = fmt.db(v); });
       ctl.set(base + '/mute', v => mute.classList.toggle('on', !!v));
@@ -24,7 +45,7 @@
     for (let n = 1; n <= BANKS[bank]; n++) addrs.push(`/${bank}/${n}/fdr`, `/${bank}/${n}/mute`, `/${bank}/${n}/name`);
     send({ t: 'wing', a: 'query', addrs });
   }
-  on('wingval', m => { const f = ctl.get(m.addr); if (f) f(m.v); });
+  on('wingval', m => { checkBack(m.addr, m.v); const f = ctl.get(m.addr); if (f) f(m.v); });
   $$('#wingBank button').forEach(b => b.onclick = () => { bank = b.dataset.bank; $$('#wingBank button').forEach(x => x.classList.toggle('on', x === b)); build(); });
   on('view', v => {
     clearInterval(timer);

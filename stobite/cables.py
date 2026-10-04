@@ -106,6 +106,8 @@ class CableIO:
 
     def start(self, out_dev, in_dev, sr, block):
         """out_dev/in_dev: device indices (the same index for BlackHole-style duplex devices)."""
+        from .engine import com_init
+        com_init()
         self.stop()
         if sd is None or (out_dev is None and in_dev is None):
             return

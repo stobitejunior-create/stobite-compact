@@ -73,6 +73,8 @@ class ExtraInputs:
 
     def sync(self, keys, sr, block):
         """Open streams for devices now in use, close the rest."""
+        from .engine import com_init
+        com_init()
         keys = set(keys)
         with self.lock:
             for k in [k for k in self.devs if k not in keys]:
@@ -84,6 +86,10 @@ class ExtraInputs:
                 self.devs.pop(k, None)
                 self.status.pop(k, None)
             for k in keys - set(self.devs):
+                if k.endswith("(ASIO)"):
+                    # Windows ASIO opens one driver per program, and the WING already has it
+                    self.status[k] = "ASIO allows one device at a time: pick this mic's WASAPI or MME entry"
+                    continue
                 found = self.find(k)
                 if found is None:
                     self.status[k] = "not connected"
