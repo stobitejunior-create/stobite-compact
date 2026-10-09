@@ -18,6 +18,7 @@ const ICONS = {
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   chevl: '<path d="M15 5l-7 7 7 7"/>', chevr: '<path d="M9 5l7 7-7 7"/>',
   arrowLeft: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  sparkle: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   drag: '<circle cx="9" cy="6" r="1.2" fill="currentColor"/><circle cx="15" cy="6" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="18" r="1.2" fill="currentColor"/><circle cx="15" cy="18" r="1.2" fill="currentColor"/>',
   split: '<path d="M12 3v18"/><path d="M5 8l-3 4 3 4M19 8l3 4-3 4"/>',

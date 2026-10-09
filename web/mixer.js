@@ -394,6 +394,11 @@
   $('#btnMixSettings').onclick = () => modal(async (card, close) => {
     card.classList.add('wide');
     const lib = await api('settings-library');
+    const tplList = h('div', { class: 'tpl-list' });
+    api('templates').then(list => list.forEach(t => tplList.append(h('div', { class: 'tpl', onclick: () => { close(); applyTemplate(t.id); } },
+      h('div', { class: 'tpl-ic' }, icon('sparkle', 18)),
+      h('div', { class: 'tpl-txt' }, h('b', {}, t.name), h('small', {}, t.style), h('p', {}, t.about)),
+      h('button', { class: 'btn accent' }, 'Apply…'))))).catch(() => {});
     const name = h('input', { placeholder: 'Name, e.g. "Sunday mix – home"', value: (S.session?.name || 'Mix') + ' mix', style: 'flex:1' });
     const list = h('div', { class: 'list' });
     const folderInput = h('input', { type: 'file', hidden: true, multiple: true, webkitdirectory: true, onchange: async e => {
@@ -404,6 +409,7 @@
     } });
     card.append(h('h3', {}, 'Mix settings'),
       h('p', { class: 'hint' }, 'Carry your sound between computers. Saving makes a folder with one file per channel (e.g. “03 Piano.stobite-channel”) plus one for the buses, effects and master. Each channel file also goes into your sound library, so you can put “Piano” on any piano later.'),
+      h('h4', {}, 'Templates: a whole sound in one go'), tplList,
       h('h4', {}, 'Save this mix'),
       h('div', { style: 'display:flex;gap:6px' }, name, h('button', { class: 'btn accent', onclick: async () => {
         const r = await tryApi('mix-save', { name: name.value });
@@ -417,6 +423,56 @@
     if (!lib.mixes.length) list.append(h('p', { class: 'hint' }, 'No saved mixes yet.'));
     for (const n of lib.mixes) list.append(h('div', { class: 'li', onclick: async () => { const d = await api('mix-read', undefined, '?name=' + encodeURIComponent(n)); close(); mapMix(d, n); } }, n, h('span', {}, 'Apply…')));
   });
+
+  // ---- built-in templates: every channel gets the template's sound for its instrument
+  const GUESS = [   // checked in order: the first match wins
+    [/click|cue/, 'click'], [/pastor|preach|pulpit|sermon|speaker/, 'preacher'], [/host|\bmc\b|announce/, 'host'],
+    [/choir/, 'choir'], [/bgv|\bbv|backing|harmony|alto|tenor|sop/, 'bgv'], [/worship lead|\bwl\b/, 'worship_vocal'],
+    [/kick|kik|\bbd\b/, 'kick'], [/snare|snr|\bsd\b/, 'snare'], [/tom/, 'tom'], [/hat|\bhh\b/, 'hihat'],
+    [/\boh\b|overhead|cymbal/, 'overhead'], [/room/, 'room'], [/perc|shaker|conga|cajon|bongo/, 'perc'],
+    [/synth ?bass|\bsub\b/, 'synth_bass'], [/bass|\bbs\b/, 'bass'], [/\bag\b|acoustic|\bacc?\b/, 'ag'],
+    [/\beg\b|elec|gtr|guitar/, 'eg'], [/piano|pno/, 'piano'], [/pad/, 'pad'], [/organ|\bb3\b|hammond/, 'organ'],
+    [/key|synth|nord/, 'keys'], [/string|violin|viola|cello/, 'strings'], [/brass|sax|trumpet|trombone|horn/, 'brass'],
+    [/track|playback|\bmtx\b|stem|backing track/, 'tracks'], [/video|media|youtube/, 'video'],
+    [/crowd|audience|ambient|ambience|congregation/, 'ambient'], [/lead|\bld\b|vox|vocal|voc|sing/, 'lead_vocal'],
+  ];
+  const guessSound = (ch, tpl) => {
+    if (ch.type && tpl.channels[ch.type]) return ch.type;
+    const n = (ch.name || '').toLowerCase();
+    if (/^ch \d+$/.test(n)) return '';
+    for (const [re, k] of GUESS) if (re.test(n) && tpl.channels[k]) return k;
+    return '';
+  };
+  window.applyTemplate = async function (id) {
+    const tpl = await tryApi('template', undefined, '?id=' + encodeURIComponent(id));
+    modal((card, close) => {
+      card.classList.add('wide');
+      const sounds = sortOpts([['', 'Leave as it is'], ...Object.entries(tpl.channels).map(([k, d]) => [k, d.name])], 1);
+      const used = S.mixer.order.filter(c => { const ch = S.mixer.channels[c]; return ch.type || !/^Ch \d+$/.test(ch.name); });
+      const shown = used.length ? used : S.mixer.order;
+      const rows = shown.map(c => {
+        const ch = S.mixer.channels[c], g = guessSound(ch, tpl);
+        const sel_ = h('select', {}, ...sounds.map(([v, l]) => h('option', { value: v, selected: v === g }, l)));
+        return { c, sel_, el: h('div', { class: 'maprow' }, icon(ch.icon || 'input', 16), h('b', {}, `${c + 1}: ${ch.name}`), h('span', { class: 'farrow' }, '→'), sel_) };
+      });
+      const opts = { chain: true, sends: true, routing: true, identity: false, levels: false };
+      let globals = true;
+      const box = (k, label) => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: opts[k], onchange: e => opts[k] = e.target.checked }), label);
+      const matched = rows.filter(r => r.sel_.value).length;
+      card.append(h('h3', {}, tpl.name), h('p', { class: 'hint' }, tpl.style + '. ' + tpl.about),
+        h('p', { class: 'hint' }, used.length ? `Each channel gets the sound for its instrument (${matched} of ${rows.length} matched from their instrument or name). Change any of them, or leave a channel as it is. Faders aren't touched.`
+          : 'No channels have an instrument or name yet, so pick a sound for each one (or set the instruments in the mixer first and come back).'),
+        h('div', { class: 'maplist' }, ...rows.map(r => r.el)),
+        h('div', { class: 'scope' }, box('chain', 'Processing'), box('sends', 'Reverb & delay sends'), box('routing', 'Group buses'),
+          h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: true, onchange: e => globals = e.target.checked }), 'Buses, reverbs, delay & master')),
+        h('p', { class: 'hint' }, 'Applying replaces the processing on the channels you picked. Undo with Ctrl+Z (⌘Z on a Mac) in the mixer.'),
+        h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel'), h('button', { class: 'btn accent', onclick: async () => {
+          const assign = rows.filter(r => r.sel_.value).map(r => ({ ch: r.c, data: tpl.channels[r.sel_.value] }));
+          await tryApi('settings-apply', { assign, opts, globals: globals ? tpl.globals : null });
+          toast(`${tpl.name}: applied to ${assign.length} channel${assign.length === 1 ? '' : 's'}${globals ? ' + buses, effects and master' : ''}. Ctrl/⌘Z to undo.`); close();
+        } }, 'Apply')));
+    });
+  };
 
   // match each saved channel to a channel here (by name, then instrument, then position), let the user adjust, apply
   function mapMix(data, title) {

@@ -376,8 +376,18 @@ class App:
                 chans = [d for d in out if d.get("kind") == "stobite-channel"]
                 glob_ = next((d for d in out if d.get("kind") == "stobite-mix"), None)
                 return web.json_response({"channels": chans, "globals": glob_})
+            if name == "templates":
+                from .templates import list_templates
+                return web.json_response(list_templates())
+            if name == "template":
+                from .templates import get_template
+                return web.json_response(get_template(q["id"]))
             if name == "settings-apply":
                 st = e.mixer.snapshot()
+                self.mix_undo.append(e.mixer.snapshot())   # Cmd/Ctrl+Z takes the whole apply back
+                del self.mix_undo[:-100]
+                self.mix_redo.clear()
+                self.mix_ck = 0
                 opts = body.get("opts") or {}
                 for a in body.get("assign") or []:
                     c = int(a["ch"])

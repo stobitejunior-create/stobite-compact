@@ -85,6 +85,8 @@ The **phone remote** is off by default (Setup). When off, only this computer can
 
 ## Files
 
+**Mix templates:** Mixer → Mix settings → *Worship: Big & Polished* (in the style of modern live worship records). It gives every channel the sound for its instrument (matched by instrument or name, all changeable) and sets the buses, reverbs, delay and master: two-stage vocal compression with a plate and a long hall, wide backing vocals, parallel-compressed drums with a crushed room, guitars/keys/band that dip at vocal frequencies only while the lead sings, reverbs that duck under the words, and a -14 LUFS master. Faders are left alone. Undo with Ctrl/Cmd+Z. Templates live in `stobite/templates.py`.
+
 **Feedback safety:** the app never sends audio back into the WING unless *Setup → Send the mix back into the WING* is switched on (the WING's USB returns are often patched into channels, which makes a screaming loop). You listen on the computer's own output instead. If the app's output ever comes back in on a channel, it detects it within about a second, cuts every output and names the channel; press Unmute after fixing the routing.
 
 Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording uses about 0.52 GB per channel per hour (24 channels for 2 hours is about 25 GB; all 48 is about 25 GB per hour), so disarm unused channels.
