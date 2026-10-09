@@ -74,7 +74,7 @@
     nodes.set('out:main', out1); mcol.append(out1);
     if (cfg.mon_l >= 0) { const o = h('div', { class: 'rnode out' }, icon('headset', 16), h('span', { class: 'rname' }, `Monitor ${+cfg.mon_l + 1}–${+cfg.mon_r + 1}`)); nodes.set('out:mon', o); mcol.append(o); }
     // cables
-    const srcOpts = [['none', '— off —'], ['master', 'Master (stream mix)'], ...S.mixer.buses.map(b => [`bus:${b.id}`, 'Bus: ' + b.name]), ...S.mixer.order.map(c => [`ch:${c}`, 'Ch: ' + S.mixer.channels[c].name])];
+    const srcOpts = sortOpts([['none', 'None (off)'], ['master', 'Master (stream mix)'], ...S.mixer.buses.map(b => [`bus:${b.id}`, 'Bus: ' + b.name]), ...S.mixer.order.map(c => [`ch:${c}`, 'Ch: ' + S.mixer.channels[c].name])], 2);
     S.mixer.cables.forEach((cb, k) => {
       const node = h('div', { class: 'rnode cable' }, icon('cable', 16), h('span', { class: 'rname' }, cb.name),
         h('select', { onchange: e => { setParam(['cables', k, 'src'], e.target.value); render(); } }, ...srcOpts.map(([v, l]) => h('option', { value: v, selected: cb.src === v }, l))),

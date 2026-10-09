@@ -185,6 +185,8 @@ def find_device(name, kind):
     Input:  the chosen device, or with "Auto" the WING. Never the computer's own microphone:
             if the WING (or the chosen device) isn't connected there is simply no main input.
     Output: the chosen device, else a WING, else the system default output."""
+    if name == "none":
+        return None   # deliberately no device
     devs = list_devices()
     key = "ins" if kind == "input" else "outs"
     if name:
@@ -395,15 +397,21 @@ class Engine:
         try:
             sr = int(self.cfg["sr"])
             kw = dict(samplerate=sr, blocksize=int(self.cfg["block"]), dtype="float32", latency="low")
-            want_out = find_device(self.cfg.get("output"), "output")
+            no_out = self.cfg.get("output") == "none"
+            want_out = None if no_out else find_device(self.cfg.get("output"), "output")
             failures = []
             ind = outd = None
             for cand in input_candidates(self.cfg.get("input")):
-                o = pair_output(cand, want_out)
-                if o is None:
+                o = None if no_out else pair_output(cand, want_out)
+                if o is None and not no_out:
                     continue
                 try:
                     nin = sd.query_devices(cand)["max_input_channels"]
+                    if no_out:   # record / feed the stream output without playing on the interface
+                        self.stream = sd.InputStream(device=cand, channels=nin,
+                                                     callback=lambda i_, f, t, st: self._callback(i_, None, f, t, st), **kw)
+                        ind, outd, self.dev_ins, self.dev_outs = cand, None, nin, 0
+                        break
                     nout = sd.query_devices(o)["max_output_channels"]
                     self.stream = sd.Stream(device=(cand, o), channels=(nin, nout), callback=self._callback, **kw)
                     ind, outd, self.dev_ins, self.dev_outs = cand, o, nin, nout
@@ -413,6 +421,19 @@ class Engine:
                     failures.append(f"{sd.query_devices(cand)['name']} ({api}): {ex}")
                     print("Audio input failed:", failures[-1], flush=True)
                     self.stream = None
+            if self.stream is None and no_out:
+                self.dev_ins = self.dev_outs = 0
+                self.in_name = self.out_name = ""
+                self.out_is_wing = False
+                self.listen.stop()
+                self.stream_out.stop()
+                self.status = "stopped"
+                self.error = (explain_audio_error(failures[0]) if failures else
+                              "No input and no output selected, so audio is off. Pick a device in Setup to hear or record."
+                              if self.cfg.get("input") == "none" else
+                              "Output is set to None and no input is connected (is the WING plugged in?), so audio is off.")
+                self.emit("status")
+                return
             if self.stream is None:
                 # no main input: keep playback and the mixer working on the output alone
                 outd = want_out
@@ -441,7 +462,7 @@ class Engine:
             self.stream.start()
             self.in_name = sd.query_devices(ind)["name"] if ind is not None else ""
             self.in_is_wing = bool(self.in_name) and any(k in self.in_name.upper() for k in ("WING", "BEHRINGER"))
-            self.out_name = sd.query_devices(outd)["name"]
+            self.out_name = sd.query_devices(outd)["name"] if outd is not None else ""
             self.out_is_wing = is_wing_name(self.out_name)
             self.start_listen()
             self.status, self.error = "running", ""
@@ -511,6 +532,11 @@ class Engine:
 
     def _callback(self, indata, outdata, frames, tinfo, status):
         t0 = time.perf_counter()
+        if outdata is None:   # input-only stream (output set to None): mix into a scratch buffer
+            buf = getattr(self, "_null_out", None)
+            if buf is None or buf.shape[0] != frames:
+                buf = self._null_out = np.zeros((frames, 2), np.float32)
+            outdata = buf
         try:
             if status:
                 self.xruns += 1
@@ -572,8 +598,9 @@ class Engine:
             outs = outdata.shape[1]
             if direct is not None:
                 off = int(self.cfg["direct_offset"])
-                n = max(0, min(nch, outs - off))
-                outdata[:, off:off + n] = direct[:, :n]
+                n = max(0, min(nch, outs - off)) if off >= 0 else 0   # -1 = None
+                if n:
+                    outdata[:, off:off + n] = direct[:, :n]
             l, r = int(self.cfg["main_l"]), int(self.cfg["main_r"])
             if 0 <= l < outs:
                 outdata[:, l] = master[:, 0]

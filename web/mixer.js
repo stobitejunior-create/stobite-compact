@@ -19,7 +19,7 @@
   window.mixerPathOf = pathOf;
 
   // ---------------------------------------------------------- option lists
-  window.destOptions = (self) => [['master', 'Master (direct)'], ...S.mixer.buses.filter(b => b.id !== self).map(b => [b.id, b.name]), ['none', '— not routed —']];
+  window.destOptions = (self) => sortOpts([['none', 'None (not routed)'], ['master', 'Master (direct)'], ...S.mixer.buses.filter(b => b.id !== self).map(b => [b.id, b.name])], 2);
   // what the 48 main inputs really are: the WING, another interface chosen in Setup, or nothing connected
   window.mainInputLabel = () => {
     const i = S.info;
@@ -34,7 +34,7 @@
   const devKey = d => `${d.name} (${d.api})`;
   window.inputOptions = () => {
     const n = Math.max(S.info?.nIn || 0, 48);
-    const o = [];
+    const o = [['none', 'None (no input)']];
     const mainLabel = mainInputLabel();
     for (let i = 0; i < n; i++) o.push([`in:${i}`, `${mainLabel} ${i + 1}${S.info && !S.info.devIns ? ' (not connected)' : ''}`]);
     for (let k = 0; k < 4; k++) { o.push([`cable:${2 * k}`, `Cable ${k + 1} L`]); o.push([`cable:${2 * k + 1}`, `Cable ${k + 1} R`]); }
@@ -47,8 +47,7 @@
       if (d.ins === 1) o.push([`dev:${devKey(d)}|0`, `🎤 ${d.name}`]);
       else for (let c = 0; c < Math.min(d.ins, 16); c++) o.push([`dev:${devKey(d)}|${c}`, `🎤 ${d.name} — input ${c + 1}`]);
     }
-    o.push(['none', '— none —']);
-    return o;
+    return sortOpts(o, 1);
   };
   window.scOptions = () => [['', '— none —'], ...S.mixer.buses.map(b => [`bus:${b.id}`, `Bus: ${b.name}`]),
     ...S.mixer.order.map(c => [`ch:${c}`, `Ch ${c + 1}: ${S.mixer.channels[c].name}`])];

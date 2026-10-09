@@ -57,6 +57,11 @@ function setParam(path, v) {
   emit('set', path);
 }
 
+// A–Z with numbers in order ("USB 2" before "USB 10"); the first `pinned` entries (None, Auto…) stay on top.
+const abc = (a, b) => String(a).replace(/^[^\p{L}\p{N}]+/u, '').localeCompare(String(b).replace(/^[^\p{L}\p{N}]+/u, ''), undefined, { numeric: true, sensitivity: 'base' });
+window.sortOpts = (opts, pinned = 0) => [...opts.slice(0, pinned), ...opts.slice(pinned).sort((x, y) => abc(x[1], y[1]))];
+window.sortDevices = list => [...list].sort((x, y) => abc(x.name, y.name) || abc(x.api, y.api));
+
 async function api(name, body, query = '') {
   const opts = body instanceof FormData ? { method: 'POST', body } : body !== undefined ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
   const r = await fetch('/api/' + name + query, opts);

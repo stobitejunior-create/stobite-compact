@@ -11,8 +11,9 @@
     const devName = d => `${d.name} (${d.api})`;
     const sel = (kind) => {
       const key = kind === 'input' ? 'ins' : 'outs';
-      const s = h('select', {}, kind === 'input' ? h('option', { value: '' }, 'Auto: the WING only (never the computer’s mic)') : h('option', { value: '' }, 'Auto'));
-      for (const d of devices.filter(d => d[key] > 0)) s.append(h('option', { value: devName(d), selected: c[kind] === devName(d) || c[kind] === d.name }, `${d.wing ? '★ ' : ''}${d.name} — ${d[key]} ch (${d.api})`));
+      const s = h('select', {}, h('option', { value: 'none', selected: c[kind] === 'none' }, kind === 'input' ? 'None: no input' : 'None: no output'),
+        kind === 'input' ? h('option', { value: '', selected: !c[kind] }, 'Auto: the WING only (never the computer’s mic)') : h('option', { value: '', selected: !c[kind] }, 'Auto'));
+      for (const d of sortDevices(devices.filter(d => d[key] > 0))) s.append(h('option', { value: devName(d), selected: c[kind] === devName(d) || c[kind] === d.name }, `${d.wing ? '★ ' : ''}${d.name} — ${d[key]} ch (${d.api})`));
       s.onchange = () => save({ [kind]: s.value || null });
       return s;
     };
@@ -50,14 +51,14 @@
           if (e.target.checked && !confirm('Send the mix back into the WING over USB?\n\nOnly do this if the WING\'s USB returns are NOT patched into a channel that is also sent back to USB, or it will screech (feedback).\n\nIf it does, the app cuts the sound by itself within about a second.')) { e.target.checked = false; return; }
           save({ wing_return: e.target.checked }); } }), 'Send the mix back into the WING (USB returns)') : null,
         i.outIsWing && !c.wing_return ? h('p', { class: 'hint' }, 'Off (safe): nothing goes back into the WING, so the app can never cause feedback through it. The settings below only apply when this is on.') : null,
-        h('div', { class: 'f' }, h('span', {}, 'Stream / main L'), num('main_l', outOpts)),
-        h('div', { class: 'f' }, h('span', {}, 'Stream / main R'), num('main_r', outOpts)),
+        h('div', { class: 'f' }, h('span', {}, 'Stream / main L'), num('main_l', [[-1, 'None'], ...outOpts])),
+        h('div', { class: 'f' }, h('span', {}, 'Stream / main R'), num('main_r', [[-1, 'None'], ...outOpts])),
         h('div', { class: 'f' }, h('span', {}, 'Monitor L'), num('mon_l', [[-1, 'Same as main'], ...outOpts])),
         h('div', { class: 'f' }, h('span', {}, 'Monitor R'), num('mon_r', [[-1, 'Same as main'], ...outOpts])),
         h('p', { class: 'hint' }, 'Separate monitor (headphone) outputs let you use Mono / Side checks without affecting the stream.'),
         h('label', { class: 'chk', style: 'margin:8px 0' }, h('input', { type: 'checkbox', checked: c.monitor_live, onchange: e => save({ monitor_live: e.target.checked }) }), 'Live monitoring — hear the inputs through the mixer when not playing back'),
         h('label', { class: 'chk', style: 'margin:8px 0' }, h('input', { type: 'checkbox', checked: c.direct_outs, onchange: e => save({ direct_outs: e.target.checked }) }), 'Send each processed channel back to the WING (USB returns)'),
-        h('div', { class: 'f' }, h('span', {}, 'Returns start at'), num('direct_offset', outOpts)),
+        h('div', { class: 'f' }, h('span', {}, 'Returns start at'), num('direct_offset', [[-1, 'None'], ...outOpts])),
         h('p', { class: 'hint' }, 'Off by default. Only turn this on if you deliberately want the WING to use this computer\'s processing (it adds a few milliseconds of delay). Normally the WING keeps the room, and this app is a separate broadcast mix.')),
 
       wingChannelsCard(i),
@@ -84,6 +85,7 @@
           h('li', {}, h('b', {}, 'Windows:'), ' keep the music player going to the WING (the “Behringer USB 1-8” speaker device), as now. Never set Windows\' default output to CABLE Input, or the music skips this mix.'),
           h('li', {}, h('b', {}, 'OBS:'), ' Settings → Audio: set ', h('b', {}, 'Desktop Audio and Mic/Auxiliary Audio to Disabled'), ' (otherwise OBS also grabs the music directly and it plays twice, out of time). Then in your scene add ', h('b', {}, 'Audio Input Capture → CABLE Output'), '. That is the whole service sound. Use its Advanced Audio Properties → Sync Offset if the sound is ahead of or behind the video.'),
           h('li', {}, h('b', {}, 'Zoom:'), ' Microphone = ', h('b', {}, 'CABLE Output'), ' (the same mix). In Audio settings turn on ', h('b', {}, 'Original sound for musicians'), ' and set background noise suppression to Low, so Zoom doesn\'t chop the music. Speaker = the monitor screen, with its volume down if it is in the room, so the remote voices aren\'t picked up by the church mics.'),
+          h('li', {}, h('b', {}, 'Videos played in OBS:'), ' send their sound through the WING, like the music, so it reaches the stream, Zoom ', h('i', {}, 'and'), ' the room. OBS Settings → Audio → Advanced → ', h('b', {}, 'Monitoring Device'), ' = the WING (the same “Behringer USB 1-8” device the music uses). On the video source: right-click → Advanced Audio Properties → Audio Monitoring = ', h('b', {}, 'Monitor Only (mute output)'), ' (so OBS doesn\'t also add it directly, twice). If the video\'s sound comes out late in the stream, add a ', h('b', {}, 'Render Delay'), ' filter to the video source (start around 150 ms).'),
           h('li', {}, 'Plug headphones into this computer and set ', h('b', {}, 'Headphones'), ' to them, to hear exactly what the stream hears.')),
         h('p', { class: 'hint' }, 'The music goes Windows → WING → this app → CABLE → OBS and Zoom. Nothing goes back into the WING, so there is no loop. If something ever loops, the app cuts the sound and shows where it came back in.')),
 
@@ -110,11 +112,10 @@
     const rank = { 'Windows WASAPI': 0, 'Core Audio': 0, 'MME': 1, 'Windows DirectSound': 2, 'Windows WDM-KS': 3 };
     const best = new Map();
     for (const d of outs) { const k = d.name.replace(/ \(.*$/, ''); const b = best.get(k); if (!b || (rank[d.api] ?? 9) < (rank[b.api] ?? 9)) best.set(k, d); }
-    const list = [...best.values()].sort((a, b) => (/cable|virtual|voicemeeter/i.test(b.name) ? 1 : 0) - (/cable|virtual|voicemeeter/i.test(a.name) ? 1 : 0));
+    const list = sortDevices([...best.values()]);
     const s = h('select', { onchange: e => save({ stream_out: e.target.value }) }, h('option', { value: '' }, 'Off'));
     // VB-Cable on Windows shows two doors into the same cable: the stereo "CABLE Input" is the one to use
     const many = d => /\b(8|16|32)ch\b/i.test(d.name);
-    list.sort((a, b) => many(a) - many(b));
     for (const d of list) {
       const v = `${d.name} (${d.api})`, virt = /cable|virtual|voicemeeter/i.test(d.name);
       const label = (virt && !many(d) ? '★ ' : '') + v + (virt && !many(d) ? '  ← use this for OBS' : virt && many(d) ? '  (multichannel; not needed)' : '');
@@ -126,7 +127,7 @@
 
   function listenSel(i) {
     const c = i.cfg, cur = c.listen ?? 'auto';
-    const opts = [['auto', 'This computer (automatic)'], ...devices.filter(d => d.outs > 0 && !d.wing && d.api !== 'ASIO').map(d => [`${d.name} (${d.api})`, `${d.name} (${d.api})`]), ['', 'Off']];
+    const opts = [['auto', 'This computer (automatic)'], ['', 'Off'], ...sortDevices(devices.filter(d => d.outs > 0 && !d.wing && d.api !== 'ASIO')).map(d => [`${d.name} (${d.api})`, `${d.name} (${d.api})`])];
     const s = h('select', { onchange: e => save({ listen: e.target.value }) });
     opts.forEach(([v, l]) => s.append(h('option', { value: v, selected: v === cur }, l)));
     return s;
@@ -169,7 +170,7 @@
     const pick = (key, kind) => {
       const k = kind === 'input' ? 'ins' : 'outs';
       return h('select', { onchange: e => save({ [key]: e.target.value || null }) }, h('option', { value: '' }, 'None (internal only)'),
-        ...devices.filter(d => d[k] > 0).map(d => h('option', { value: devName(d), selected: c[key] === devName(d) || c[key] === d.name }, `${d.name} — ${d[k]} ch`)));
+        ...sortDevices(devices.filter(d => d[k] > 0)).map(d => h('option', { value: devName(d), selected: c[key] === devName(d) || c[key] === d.name }, `${d.name} — ${d[k]} ch`)));
     };
     const isMac = navigator.platform.includes('Mac');
     return h('div', { class: 'card' }, h('h3', {}, icon('cable', 16), ' Virtual cables'),
