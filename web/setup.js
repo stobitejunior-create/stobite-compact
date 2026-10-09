@@ -79,7 +79,7 @@
 
       h('div', { class: 'card' }, h('h3', {}, 'Livestream with OBS and Zoom'),
         h('ol', { class: 'steps' },
-          h('li', {}, h('b', {}, 'Install VB-Audio Virtual Cable'), ' (free, vb-audio.com), then restart the computer. It adds two devices: ', h('b', {}, '“CABLE Input”'), ' (where sound goes in) and ', h('b', {}, '“CABLE Output”'), ' (where it comes out). In Windows Sound settings set both to 48 kHz.'),
+          h('li', {}, h('b', {}, 'Install VB-Audio Virtual Cable'), ' (free, vb-audio.com), then restart the computer. It adds ', h('b', {}, '“CABLE Input”'), ' (where sound goes in) and ', h('b', {}, '“CABLE Output”'), ' (where it comes out). You may also see “CABLE In 16ch”: the same cable with 16 channels; ignore it and use the plain CABLE Input. In Windows Sound settings set both to 48 kHz.'),
           h('li', {}, h('b', {}, 'Here:'), ' set ', h('b', {}, 'Stream output'), ' (above) to ', h('b', {}, 'CABLE Input'), '. Leave “Send the mix back into the WING” off.'),
           h('li', {}, h('b', {}, 'Windows:'), ' keep the music player going to the WING (the “Behringer USB 1-8” speaker device), as now. Never set Windows\' default output to CABLE Input, or the music skips this mix.'),
           h('li', {}, h('b', {}, 'OBS:'), ' Settings → Audio: set ', h('b', {}, 'Desktop Audio and Mic/Auxiliary Audio to Disabled'), ' (otherwise OBS also grabs the music directly and it plays twice, out of time). Then in your scene add ', h('b', {}, 'Audio Input Capture → CABLE Output'), '. That is the whole service sound. Use its Advanced Audio Properties → Sync Offset if the sound is ahead of or behind the video.'),
@@ -112,7 +112,14 @@
     for (const d of outs) { const k = d.name.replace(/ \(.*$/, ''); const b = best.get(k); if (!b || (rank[d.api] ?? 9) < (rank[b.api] ?? 9)) best.set(k, d); }
     const list = [...best.values()].sort((a, b) => (/cable|virtual|voicemeeter/i.test(b.name) ? 1 : 0) - (/cable|virtual|voicemeeter/i.test(a.name) ? 1 : 0));
     const s = h('select', { onchange: e => save({ stream_out: e.target.value }) }, h('option', { value: '' }, 'Off'));
-    for (const d of list) { const v = `${d.name} (${d.api})`; s.append(h('option', { value: v, selected: v === cur }, (/cable|virtual|voicemeeter/i.test(d.name) ? '★ ' : '') + v)); }
+    // VB-Cable on Windows shows two doors into the same cable: the stereo "CABLE Input" is the one to use
+    const many = d => /\b(8|16|32)ch\b/i.test(d.name);
+    list.sort((a, b) => many(a) - many(b));
+    for (const d of list) {
+      const v = `${d.name} (${d.api})`, virt = /cable|virtual|voicemeeter/i.test(d.name);
+      const label = (virt && !many(d) ? '★ ' : '') + v + (virt && !many(d) ? '  ← use this for OBS' : virt && many(d) ? '  (multichannel; not needed)' : '');
+      s.append(h('option', { value: v, selected: v === cur }, label));
+    }
     if (cur && !list.some(d => `${d.name} (${d.api})` === cur)) s.append(h('option', { value: cur, selected: true }, cur + ' (not connected)'));
     return s;
   }
