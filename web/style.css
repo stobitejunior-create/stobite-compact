@@ -520,3 +520,11 @@ details summary { cursor: pointer; color: var(--dim); }
 .wing-lock { margin: 8px 12px; padding: 10px 12px; border-radius: 8px; background: #3a2a10; border: 1px solid #6b4d1a; color: #ffd79a; font-size: 12.5px; line-height: 1.5; }
 .wing-lock b { color: #ffe7c0; }
 #sessName.none { color: var(--faint); font-style: italic; }
+
+.fb-banner { position: fixed; top: 58px; left: 50%; transform: translateX(-50%); z-index: 45; width: min(760px, calc(100vw - 32px));
+  background: #4a1214; border: 1px solid #a3282d; color: #ffd0d1; border-radius: 10px; padding: 12px 14px; font-size: 13px; line-height: 1.5;
+  box-shadow: 0 16px 40px -10px #000; animation: popIn .3s var(--spring) both; }
+.fb-banner[hidden] { display: none; }
+.fb-banner b { color: #fff; }
+.fb-banner .btn { margin-left: 8px; }
+.steps li { margin: 6px 0; line-height: 1.5; }

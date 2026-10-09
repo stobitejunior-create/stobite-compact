@@ -85,6 +85,8 @@ The **phone remote** is off by default (Setup). When off, only this computer can
 
 ## Files
 
+**Feedback safety:** the app never sends audio back into the WING unless *Setup → Send the mix back into the WING* is switched on (the WING's USB returns are often patched into channels, which makes a screaming loop). You listen on the computer's own output instead. If the app's output ever comes back in on a channel, it detects it within about a second, cuts every output and names the channel; press Unmute after fixing the routing.
+
 Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording uses about 0.52 GB per channel per hour (24 channels for 2 hours is about 25 GB; all 48 is about 25 GB per hour), so disarm unused channels.
 
 ## Shortcuts

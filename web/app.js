@@ -162,8 +162,11 @@ on('info', () => {
   if (!i.cfg.show_wing && S.view === 'console') showView('mixer');
   $('#audioDot').className = 'dot ' + (i.status === 'running' ? 'ok' : i.status === 'starting' ? 'wait' : 'bad');
   if (i.status === 'starting') toast('Starting audio… if macOS asks for microphone access, click Allow — that is how it hears the WING.');
+  $('#fbBanner').hidden = !i.feedback;
+  $('#fbText').textContent = (i.feedback || '').replace(/^Feedback stopped: /, '');
   $('#audioDot').title = i.status === 'running' ? `Audio running: in ${i.inName} (${i.devIns} ch), out ${i.outName}` : 'Audio: ' + (i.error || i.status);
 });
+$('#fbUnmute').onclick = async () => { await tryApi('feedback-reset', {}); S.info = await api('info'); emit('info'); toast('Sound back on. If it screeches again, fix the WING routing first.'); };
 on('session', () => { $('#sessName').textContent = S.session.name; $('#sessName').classList.toggle('none', !!S.session.scratch); });
 
 // ------------------------------------------------------------ views

@@ -32,13 +32,24 @@
           i.devIns ? h('p', { class: 'ok' }, `Main inputs: ${i.inName} (${i.devIns})`) :
           h('p', { class: 'warn-line' }, 'No WING connected, so channels set to WING inputs are silent (your computer’s microphone is never used unless you pick it on a channel). Plug in the WING and it connects by itself within a few seconds.'),
         h('div', { class: 'f' }, h('span', {}, 'Input (record from)'), sel('input')),
-        h('div', { class: 'f' }, h('span', {}, 'Output (listen on)'), sel('output')),
+        h('div', { class: 'f' }, h('span', {}, 'Output device'), sel('output')),
         h('div', { class: 'f' }, h('span', {}, 'Sample rate'), num('sr', [[44100, '44.1 kHz'], [48000, '48 kHz (WING default)'], [96000, '96 kHz']])),
         h('div', { class: 'f' }, h('span', {}, 'Buffer'), num('block', [[64, '64 — lowest latency'], [128, '128'], [256, '256 — recommended'], [512, '512 — safest with lots of processing'], [1024, '1024']])),
         h('p', { class: 'hint' }, 'If the CPU meter goes red or you hear clicks, raise the buffer to 512.'),
         h('div', { style: 'display:flex;gap:6px;margin-top:8px' }, h('button', { class: 'btn', onclick: async () => { await tryApi('audio-restart', {}); S.info = await api('info'); emit('info'); } }, 'Restart audio'))),
 
       h('div', { class: 'card' }, h('h3', {}, 'Outputs'),
+        h('div', { class: 'f' }, h('span', {}, 'Stream output (OBS / Zoom)'), streamSel(i)),
+        h('p', { class: i.streamOutError ? 'err' : i.streamOutName ? 'ok' : 'hint' }, i.streamOutError ? i.streamOutError :
+          i.streamOutName ? `● The mix is going to ${i.streamOutName}. In OBS, add an Audio Input Capture of its other end (e.g. “CABLE Output”).` :
+          'Off. To livestream, install VB-Audio Virtual Cable and pick “CABLE Input” here. See “Livestream with OBS and Zoom” below.'),
+        i.outIsWing ? h('div', { class: 'f' }, h('span', {}, 'Headphones (listen on)'), listenSel(i)) : null,
+        i.outIsWing ? h('p', { class: i.listenError ? 'err' : 'hint' }, i.listenError ? 'Couldn\'t open that output: ' + i.listenError :
+          i.listenName ? `You hear the mix on ${i.listenName}. Plug headphones into this computer to listen.` : 'Listening is off.') : null,
+        i.outIsWing ? h('label', { class: 'chk', style: 'margin:8px 0' }, h('input', { type: 'checkbox', checked: !!c.wing_return, onchange: e => {
+          if (e.target.checked && !confirm('Send the mix back into the WING over USB?\n\nOnly do this if the WING\'s USB returns are NOT patched into a channel that is also sent back to USB, or it will screech (feedback).\n\nIf it does, the app cuts the sound by itself within about a second.')) { e.target.checked = false; return; }
+          save({ wing_return: e.target.checked }); } }), 'Send the mix back into the WING (USB returns)') : null,
+        i.outIsWing && !c.wing_return ? h('p', { class: 'hint' }, 'Off (safe): nothing goes back into the WING, so the app can never cause feedback through it. The settings below only apply when this is on.') : null,
         h('div', { class: 'f' }, h('span', {}, 'Stream / main L'), num('main_l', outOpts)),
         h('div', { class: 'f' }, h('span', {}, 'Stream / main R'), num('main_r', outOpts)),
         h('div', { class: 'f' }, h('span', {}, 'Monitor L'), num('mon_l', [[-1, 'Same as main'], ...outOpts])),
@@ -66,6 +77,16 @@
 
       sessionsCard(i),
 
+      h('div', { class: 'card' }, h('h3', {}, 'Livestream with OBS and Zoom'),
+        h('ol', { class: 'steps' },
+          h('li', {}, h('b', {}, 'Install VB-Audio Virtual Cable'), ' (free, vb-audio.com), then restart the computer. It adds two devices: ', h('b', {}, '“CABLE Input”'), ' (where sound goes in) and ', h('b', {}, '“CABLE Output”'), ' (where it comes out). In Windows Sound settings set both to 48 kHz.'),
+          h('li', {}, h('b', {}, 'Here:'), ' set ', h('b', {}, 'Stream output'), ' (above) to ', h('b', {}, 'CABLE Input'), '. Leave “Send the mix back into the WING” off.'),
+          h('li', {}, h('b', {}, 'Windows:'), ' keep the music player going to the WING (the “Behringer USB 1-8” speaker device), as now. Never set Windows\' default output to CABLE Input, or the music skips this mix.'),
+          h('li', {}, h('b', {}, 'OBS:'), ' Settings → Audio: set ', h('b', {}, 'Desktop Audio and Mic/Auxiliary Audio to Disabled'), ' (otherwise OBS also grabs the music directly and it plays twice, out of time). Then in your scene add ', h('b', {}, 'Audio Input Capture → CABLE Output'), '. That is the whole service sound. Use its Advanced Audio Properties → Sync Offset if the sound is ahead of or behind the video.'),
+          h('li', {}, h('b', {}, 'Zoom:'), ' Microphone = ', h('b', {}, 'CABLE Output'), ' (the same mix). In Audio settings turn on ', h('b', {}, 'Original sound for musicians'), ' and set background noise suppression to Low, so Zoom doesn\'t chop the music. Speaker = the monitor screen, with its volume down if it is in the room, so the remote voices aren\'t picked up by the church mics.'),
+          h('li', {}, 'Plug headphones into this computer and set ', h('b', {}, 'Headphones'), ' to them, to hear exactly what the stream hears.')),
+        h('p', { class: 'hint' }, 'The music goes Windows → WING → this app → CABLE → OBS and Zoom. Nothing goes back into the WING, so there is no loop. If something ever loops, the app cuts the sound and shows where it came back in.')),
+
       h('div', { class: 'card' }, h('h3', {}, 'Connecting the WING Compact'),
         h('ol', {},
           h('li', {}, h('b', {}, 'Cable: one USB cable, USB-A (or USB-C) to USB-B'), ' — the square "printer" type. Plug the B end into the ', h('b', {}, 'USB port on the back panel of the WING Compact'), ' (the audio interface port — not the front USB-A socket, which is for USB sticks). That one cable carries ', h('b', {}, '48 channels in and 48 out'), ' at 48 kHz.'),
@@ -80,6 +101,28 @@
         h('p', {}, 'Sessions and recordings are saved in:'), h('span', { class: 'url', style: 'font-size:12px' }, i.home),
         h('p', { class: 'hint' }, 'Recording all 48 channels uses about 25 GB per hour (24-bit WAV). Only armed channels are recorded — disarm unused channels in the Edit view to save space.')),
     );
+  }
+
+  function streamSel(i) {
+    const cur = i.cfg.stream_out || '';
+    const outs = devices.filter(d => d.outs > 0 && !d.wing && d.api !== 'ASIO');
+    // one entry per device name, preferring WASAPI on Windows (lowest latency of the shared drivers)
+    const rank = { 'Windows WASAPI': 0, 'Core Audio': 0, 'MME': 1, 'Windows DirectSound': 2, 'Windows WDM-KS': 3 };
+    const best = new Map();
+    for (const d of outs) { const k = d.name.replace(/ \(.*$/, ''); const b = best.get(k); if (!b || (rank[d.api] ?? 9) < (rank[b.api] ?? 9)) best.set(k, d); }
+    const list = [...best.values()].sort((a, b) => (/cable|virtual|voicemeeter/i.test(b.name) ? 1 : 0) - (/cable|virtual|voicemeeter/i.test(a.name) ? 1 : 0));
+    const s = h('select', { onchange: e => save({ stream_out: e.target.value }) }, h('option', { value: '' }, 'Off'));
+    for (const d of list) { const v = `${d.name} (${d.api})`; s.append(h('option', { value: v, selected: v === cur }, (/cable|virtual|voicemeeter/i.test(d.name) ? '★ ' : '') + v)); }
+    if (cur && !list.some(d => `${d.name} (${d.api})` === cur)) s.append(h('option', { value: cur, selected: true }, cur + ' (not connected)'));
+    return s;
+  }
+
+  function listenSel(i) {
+    const c = i.cfg, cur = c.listen ?? 'auto';
+    const opts = [['auto', 'This computer (automatic)'], ...devices.filter(d => d.outs > 0 && !d.wing && d.api !== 'ASIO').map(d => [`${d.name} (${d.api})`, `${d.name} (${d.api})`]), ['', 'Off']];
+    const s = h('select', { onchange: e => save({ listen: e.target.value }) });
+    opts.forEach(([v, l]) => s.append(h('option', { value: v, selected: v === cur }, l)));
+    return s;
   }
 
   function wingChannelsCard(i) {
@@ -156,7 +199,7 @@
   async function refresh() { S.info = await api('info'); emit('info'); }
   // Redraw only when something this page shows has changed: a full redraw resets dropdowns,
   // the scroll position and anything half-typed.
-  const shown = () => { const i = S.info || {}; return JSON.stringify([i.status, i.error, i.audioNote, i.devIns, i.devOuts, i.inName, i.outName, i.inIsWing, i.sr, i.cfg, i.extraInputs, i.remote, i.cables, i.wing && i.wing.ip]); };
+  const shown = () => { const i = S.info || {}; return JSON.stringify([i.status, i.error, i.audioNote, i.devIns, i.devOuts, i.inName, i.outName, i.inIsWing, i.sr, i.cfg, i.extraInputs, i.remote, i.cables, i.wing && i.wing.ip, i.outIsWing, i.listenName, i.listenError, i.streamOutName, i.streamOutError]); };
   let lastShown = '';
   on('info', () => { if (S.view !== 'setup') return; const k = shown(); if (k !== lastShown) render(); });
   on('view', v => v === 'setup' && refresh());

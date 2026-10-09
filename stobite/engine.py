@@ -18,6 +18,8 @@ import sounddevice as sd
 from .mixer import Mixer, Insert
 from .cables import CableIO
 from .inputs import ExtraInputs
+from .guard import LoopGuard
+from .listen import ListenOut, pick_listen_device, is_wing_name
 from .session import Session, Reader, Recorder, home_dir, list_sessions, safe_name, scratch_dir
 
 DEFAULT_CFG = {
@@ -27,6 +29,11 @@ DEFAULT_CFG = {
     "mon_l": -1, "mon_r": -1,              # optional separate monitor (headphone) outputs
     "cable_out": None, "cable_in": None,    # system loopback device(s) for the virtual cables
     "show_wing": False,
+    # Safety: never send audio back into the WING unless asked. Its USB returns are often patched
+    # into channels that also go back out over USB, which makes a screaming feedback loop.
+    "wing_return": False,
+    "listen": "auto",                       # where to hear the mix when the WING is the interface
+    "stream_out": "",                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
 }
 
 
@@ -346,6 +353,10 @@ class Engine:
         self.dirty = False
         self.cables = CableIO()
         self.extra = ExtraInputs()   # other microphones / interfaces used by channels
+        self.listen = ListenOut()    # the computer's own output, when the WING is the interface
+        self.stream_out = ListenOut()  # the mix for OBS / Zoom (usually "CABLE Input", a virtual cable)
+        self.guard = LoopGuard(int(self.cfg["sr"]), self.nch)
+        self.out_is_wing = False
         self.quiet = 0          # samples of continuous input silence
         self.asleep = False     # idle: skip mixing until a signal arrives
         self.auto_values = {}
@@ -362,6 +373,7 @@ class Engine:
         threading.Thread(target=self._auto_loop, daemon=True).start()
         threading.Thread(target=self._extra_loop, daemon=True).start()
         threading.Thread(target=self._device_watch, daemon=True).start()
+        threading.Thread(target=self._guard_loop, daemon=True).start()
 
     # ------------------------------------------------------------- config
     def save_cfg(self):
@@ -425,10 +437,13 @@ class Engine:
             if sr != self.sr:
                 self.sr = sr
                 self.mixer = Mixer(self.nch, sr, self.mixer.snapshot())
+                self.guard = LoopGuard(sr, self.nch)
             self.stream.start()
             self.in_name = sd.query_devices(ind)["name"] if ind is not None else ""
             self.in_is_wing = bool(self.in_name) and any(k in self.in_name.upper() for k in ("WING", "BEHRINGER"))
             self.out_name = sd.query_devices(outd)["name"]
+            self.out_is_wing = is_wing_name(self.out_name)
+            self.start_listen()
             self.status, self.error = "running", ""
             if failures and ind is None:
                 # output works but the WING didn't open: say why, loudly
@@ -440,6 +455,42 @@ class Engine:
             self.status, self.error = "error", explain_audio_error(ex)
         self.emit("status")
 
+    def start_listen(self):
+        """Hear the mix on the computer when the WING (which gets nothing back by default) is the output."""
+        if self.out_is_wing and self.stream is not None:
+            self.listen.start(pick_listen_device(self.cfg.get("listen", "auto")), self.sr, int(self.cfg["block"]))
+        else:
+            self.listen.stop()
+        choice = self.cfg.get("stream_out") or ""
+        if choice and self.stream is not None:
+            dev = pick_listen_device(choice)
+            if dev is None:
+                self.stream_out.stop()
+                self.stream_out.error = f"{choice} isn't connected (is the virtual cable installed?)"
+            else:
+                self.stream_out.start(dev, self.sr, int(self.cfg["block"]))
+        else:
+            self.stream_out.stop()
+            self.stream_out.error = ""
+
+    def _guard_loop(self):
+        """Look for feedback a few times a second while sound is going out."""
+        while True:
+            time.sleep(0.2)
+            try:
+                if self.stream is None or self.asleep or self.guard.tripped:
+                    continue
+                names = [c.get("name", "") for c in self.mixer.state.get("channels", [])]
+                if self.guard.check(names):
+                    print(self.guard.message, flush=True)
+                    self.emit("status")
+            except Exception:
+                traceback.print_exc()
+
+    def reset_feedback(self):
+        self.guard.reset()
+        self.emit("status")
+
     def start_cables(self):
         co = find_named(self.cfg.get("cable_out"), "output")
         ci = find_named(self.cfg.get("cable_in"), "input")
@@ -447,6 +498,8 @@ class Engine:
 
     def stop_audio(self):
         com_init()
+        self.listen.stop()
+        self.stream_out.stop()
         if self.stream is not None:
             try:
                 self.stream.stop()
@@ -504,6 +557,18 @@ class Engine:
                 mixer.auto = None
             master = mixer.process(src, direct)
             outdata.fill(0)
+            guard = self.guard
+            guard.push(master.mean(axis=1), raw)
+            if guard.tripped:   # feedback: everything stays silent until Unmute
+                self._advance(frames)
+                self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
+                return
+            self.listen.push(master)
+            self.stream_out.push(master)
+            if self.out_is_wing and not self.cfg.get("wing_return", False):
+                self._advance(frames)     # nothing goes back into the WING
+                self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
+                return
             outs = outdata.shape[1]
             if direct is not None:
                 off = int(self.cfg["direct_offset"])
@@ -523,18 +588,22 @@ class Engine:
                 elif mode != "stereo" and 0 <= l < outs and 0 <= r < outs:
                     # no separate monitor outs: the check applies to the main outs (and so the stream)
                     outdata[:, l], outdata[:, r] = mon[:, 0], mon[:, 1]
-            if self.playing or self.recording:
-                lp = self.session.loop if self.session else None
-                before = self.playhead
-                self.playhead += frames
-                if (self.playing and not self.recording and lp and lp["on"] and lp["end"] - lp["start"] > 2048
-                        and lp["start"] <= before < lp["end"] <= self.playhead):
-                    self.playhead = lp["start"] + (self.playhead - lp["end"])
+            self._advance(frames)
         except Exception:
             outdata.fill(0)
             traceback.print_exc()
         dt = time.perf_counter() - t0
         self.load = max(self.load * 0.95, dt / (frames / self.sr))
+
+    def _advance(self, frames):
+        """Move the playhead on (and round the loop) after each block."""
+        if self.playing or self.recording:
+            lp = self.session.loop if self.session else None
+            before = self.playhead
+            self.playhead += frames
+            if (self.playing and not self.recording and lp and lp["on"] and lp["end"] - lp["start"] > 2048
+                    and lp["start"] <= before < lp["end"] <= self.playhead):
+                self.playhead = lp["start"] + (self.playhead - lp["end"])
 
     # ------------------------------------------------------------- automation
     @staticmethod
@@ -977,5 +1046,8 @@ class Engine:
                 "nIn": self.dev_ins, "inIsWing": bool(getattr(self, "in_is_wing", False)),
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,
                 "devIns": self.dev_ins, "devOuts": self.dev_outs,
-                "inName": getattr(self, "in_name", ""), "audioNote": getattr(self, "audio_note", ""), "outName": getattr(self, "out_name", ""),
+                "inName": getattr(self, "in_name", ""), "audioNote": getattr(self, "audio_note", ""),
+                "feedback": self.guard.message if self.guard.tripped else "",
+                "outIsWing": self.out_is_wing, "listenName": self.listen.name, "listenError": self.listen.error,
+                "streamOutName": self.stream_out.name, "streamOutError": self.stream_out.error, "outName": getattr(self, "out_name", ""),
                 "home": home_dir(), "sessions": list_sessions()}

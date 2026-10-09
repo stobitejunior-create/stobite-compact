@@ -280,7 +280,8 @@ class App:
                     e.cfg["remote"] = bool(body["remote"])
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
-                          "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing"):
+                          "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
+                          "wing_return", "listen", "stream_out"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
@@ -288,8 +289,14 @@ class App:
                     await asyncio.get_running_loop().run_in_executor(None, e.start_audio)
                 elif restart_cables:
                     await asyncio.get_running_loop().run_in_executor(None, e.start_cables)
+                if ("listen" in body or "stream_out" in body) and not restart:
+                    await asyncio.get_running_loop().run_in_executor(None, e.start_listen)
                 await self.broadcast({"t": "info", "info": self.info()})
                 return web.json_response(self.info())
+            if name == "feedback-reset":
+                e.reset_feedback()
+                await self.broadcast({"t": "info", "info": self.info()})
+                return web.json_response({"ok": True})
             if name == "loudness-reset":
                 e.mixer.loud.reset()
                 return web.json_response({"ok": True})
