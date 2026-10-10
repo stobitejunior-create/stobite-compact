@@ -14,11 +14,85 @@ try:
 except Exception:  # pragma: no cover - optional
     pb = None
 
-KINDS = ("reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+KINDS = ("denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 NOTE_BEATS = {"1/2": 2.0, "1/4": 1.0, "1/4d": 1.5, "1/8": 0.5, "1/8d": 0.75, "1/8t": 1 / 3, "1/16": 0.25}
 
 tempo_fn = lambda: 120.0   # set by the mixer: the session tempo, for synced delays and tremolos
+
+
+class Denoiser:
+    """Removes steady background noise (hiss, hum, air-con, buzz) while leaving speech and music.
+
+    Short overlapping FFT frames; in every frequency band the noise floor is tracked continuously
+    (it follows the quietest level and creeps up slowly, so it re-learns if the noise changes).
+    Bands near that floor are turned down by up to `reduction` dB; the gain is smoothed in time
+    and across neighbouring bands so it doesn't warble. Adds 8 ms of delay."""
+
+    N, HOP = 512, 128
+
+    def __init__(self, fs, nch):
+        self.fs, self.nch = fs, nch
+        n = self.N
+        self.win = np.sqrt(np.hanning(n + 1)[:n]).astype(np.float64)   # sqrt-Hann: analysis x synthesis = Hann
+        self.inbuf = np.zeros((nch, n))
+        self.outbuf = np.zeros((nch, n))
+        self.pending = np.zeros((nch, 0))
+        self.ready = np.zeros((nch, 0))
+        bins = n // 2 + 1
+        self.noise = np.full((nch, bins), 1.0)
+        self.gain = np.ones((nch, bins))
+        self.frames_seen = 0
+        self.reduction, self.sens = 12.0, 1.0
+        self.smooth = None
+        self.started = False
+
+    def set(self, p):
+        self.reduction = float(np.clip(p.get("reduction", 12), 0, 40))
+        self.sens = float(np.clip(p.get("sensitivity", 50), 0, 100)) / 50.0   # 1.0 = normal
+
+    def _frame(self, frame):
+        X = np.fft.rfft(frame * self.win, axis=1)
+        mag = np.abs(X)
+        # noise floor per band: smooth the level over ~40 ms, follow its quiet points, and let it
+        # creep back up slowly (~1 dB/s) so it re-learns when the noise changes
+        self.smooth = mag if self.smooth is None else 0.7 * self.smooth + 0.3 * mag
+        up = 10 ** (1.0 / 20 * self.HOP / self.fs)
+        self.noise = np.where(self.smooth < self.noise, self.smooth, self.noise * up)
+        self.frames_seen += 1
+        floor = 10 ** (-self.reduction / 20)
+        # the smoothed minimum sits below the average noise: x1.6 brings it back up to the average
+        level = np.maximum(self.smooth, 0.5 * mag)              # the smoothed level, but let real onsets through at once
+        snr = level / np.maximum(self.noise * 1.6 * (1.0 + 1.5 * self.sens), 1e-12)
+        g = np.clip(snr - 1.0, 0.0, 1.0)                      # 0 at the threshold, 1 at twice it
+        g = floor + (1 - floor) * g
+        g = np.convolve(g.ravel(), np.ones(3) / 3, "same").reshape(g.shape)   # smooth across bands
+        att = g > self.gain                                   # open fast, close more gently
+        self.gain = np.where(att, 0.4 * self.gain + 0.6 * g, 0.75 * self.gain + 0.25 * g)
+        if self.frames_seen < 40:                             # learning the room for the first ~100 ms
+            self.gain[:] = 1.0
+        return np.fft.irfft(X * self.gain, self.N, axis=1) * self.win
+
+    def process(self, x):
+        """x: (frames, ch). Output delayed by N samples."""
+        xin = np.concatenate([self.pending, x.T.astype(np.float64)], axis=1)
+        out_parts = []
+        pos = 0
+        while xin.shape[1] - pos >= self.HOP:
+            hop = xin[:, pos:pos + self.HOP]
+            pos += self.HOP
+            self.inbuf = np.concatenate([self.inbuf[:, self.HOP:], hop], axis=1)
+            y = self._frame(self.inbuf)
+            self.outbuf += y
+            out_parts.append(self.outbuf[:, :self.HOP] * (self.HOP * 2 / self.N))   # Hann OLA at 75% overlap
+            self.outbuf = np.concatenate([self.outbuf[:, self.HOP:], np.zeros((self.nch, self.HOP))], axis=1)
+        self.pending = xin[:, pos:]
+        ready = np.concatenate([self.ready] + out_parts, axis=1) if out_parts else self.ready
+        frames = x.shape[0]
+        if ready.shape[1] < frames:                          # the very start: pad with silence
+            ready = np.concatenate([np.zeros((self.nch, frames - ready.shape[1])), ready], axis=1)
+        y, self.ready = ready[:, :frames], ready[:, frames:]
+        return y.T.astype(np.float32)
 
 
 class Effect:
@@ -33,6 +107,11 @@ class Effect:
     def set(self, m):
         self.p = dict(m)
         k, p = self.kind, self.p
+        if k == "denoise":
+            if not isinstance(self.dev, Denoiser):
+                self.dev = Denoiser(self.fs, self.nch)
+            self.dev.set(p)
+            return
         if pb is None:
             return
         try:
@@ -102,6 +181,9 @@ class Effect:
         if frames == 0:
             return x
         mix = float(np.clip(p.get("mix", 100) / 100, 0, 1))
+        if k == "denoise":
+            y = self.dev.process(x)
+            return (x * (1 - mix) + y * mix).astype(np.float32) if mix < 0.999 else y
         if k == "gain":
             g = 10 ** (float(p.get("gain", 0)) / 20) * (-1 if p.get("invert") else 1)
             y = x * g

@@ -35,6 +35,7 @@ TYPES = {
     "mbc": ("Multiband compressor", "MB", False, True),
     "width": ("Width & balance", "WIDE", False, True),
     "limiter": ("Limiter", "LIM", False, True),
+    "denoise": ("Denoiser", "DNS", True, True),
     "reverb": ("Reverb", "VERB", True, True),
     "delay": ("Delay / echo", "DLY", True, True),
     "chorus": ("Chorus", "CHOR", True, True),
@@ -48,7 +49,7 @@ TYPES = {
     "gain": ("Gain / utility", "GAIN", True, True),
     "plugin": ("Plug-in", "PLUG", True, True),
 }
-EFFECTS = ("reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+EFFECTS = ("denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 
 def new_id():
@@ -83,6 +84,7 @@ DEFAULTS = {
     "width": lambda: {"width": 100.0, "balance": 0.0},
     "limiter": lambda: {"ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
     "plugin": lambda: {"path": "", "name": "Plug-in", "params": {}},
+    "denoise": lambda: {"reduction": 12, "sensitivity": 50, "mix": 100},
     "reverb": lambda: {"size": 60, "damping": 50, "width": 100, "mix": 25},
     "delay": lambda: {"sync": True, "note": "1/4", "time": 375, "feedback": 30, "lowcut": 200, "highcut": 6000, "mix": 20},
     "chorus": lambda: {"rate": 0.8, "depth": 30, "delay": 7.0, "feedback": 0, "mix": 50},

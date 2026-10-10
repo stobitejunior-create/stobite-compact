@@ -147,6 +147,8 @@ class App:
                    "gr": [round(v, 1) for v in m["gr"]], "gg": [round(v, 1) for v in m["gg"]],
                    "mgr": round(m["mgr"], 1), "lim": round(m["lim"], 1),
                    "ph": e.playhead, "pl": e.playing, "rc": e.recording, "ld": round(e.load, 2)}
+            if e.tuner_ch is not None:
+                msg["tn"] = e.tuner_read(getattr(self, "tuner_a4", 440.0)) or {}
             if e.recording:
                 rec = e.recorder
                 msg["rf"] = rec.frames
@@ -260,6 +262,11 @@ class App:
             if e.playing:
                 e.locate(e.playhead)
             await self.broadcast({"t": "session", "session": e.session.public()})
+        elif t == "tuner":   # {ch: channel or null, a4: reference}
+            c = m.get("ch")
+            e.tuner_ch = int(c) if c is not None else None
+            self.tuner_a4 = float(m.get("a4") or 440.0)
+            e.asleep = False
         elif t == "compare":   # before / after: only what's heard here changes, never the stream
             e.mixer.compare = bool(m.get("on"))
             await self.broadcast({"t": "compare", "on": e.mixer.compare, "match": round(getattr(e.mixer, "match_db", 0.0), 1)})
@@ -394,6 +401,42 @@ class App:
                 chans = [d for d in out if d.get("kind") == "stobite-channel"]
                 glob_ = next((d for d in out if d.get("kind") == "stobite-mix"), None)
                 return web.json_response({"channels": chans, "globals": glob_})
+            if name == "master-assist":
+                # analyse the project and build the master chain in the background (about a minute)
+                if getattr(self, "assist_busy", False):
+                    raise RuntimeError("The mastering assistant is already working")
+                if e.recording:
+                    raise RuntimeError("Stop recording first")
+                target, style = float(body.get("target", -14)), str(body.get("style", "balanced"))
+                self.assist_busy = True
+                loop = asyncio.get_running_loop()
+                say = lambda msg: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.broadcast(msg)))
+
+                def work():
+                    from . import mastering
+                    try:
+                        rep = mastering.assist(e, target, style, lambda f, txt: say({"t": "assist", "progress": round(f, 2), "stage": txt}))
+                        before = e.mixer.snapshot()
+                        st = e.mixer.snapshot()
+                        st["master"]["chain"] = rep.pop("chain")
+                        st["master"]["target"] = target
+                        st["master"]["bypass"] = False
+                        e.mixer.apply_state(st)
+                        e.dirty = True
+                        def done():
+                            self.mix_undo.append(before)      # one Cmd/Ctrl+Z undoes the whole master
+                            del self.mix_undo[:-100]
+                            self.mix_redo.clear()
+                            self.mix_ck = 0
+                            asyncio.ensure_future(self._push("mixer"))
+                            asyncio.ensure_future(self.broadcast({"t": "assist", "done": True, "report": json.loads(json.dumps(rep, default=float))}))
+                        loop.call_soon_threadsafe(done)
+                    except Exception as ex:
+                        say({"t": "assist", "error": str(ex)})
+                    finally:
+                        self.assist_busy = False
+                threading.Thread(target=work, daemon=True).start()
+                return web.json_response({"ok": True})
             if name == "templates":
                 from .templates import list_templates
                 return web.json_response(list_templates())

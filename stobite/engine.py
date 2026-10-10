@@ -363,6 +363,8 @@ class Engine:
         self.guard = LoopGuard(int(self.cfg["sr"]), self.nch)
         self.out_is_wing = False
         self.counting = 0            # samples of count-in left before recording starts
+        self.tuner_ch = None         # channel the tuner listens to (its raw input)
+        self.tuner_buf = np.zeros(8192, np.float32)
         self._clicks = []            # [wave, index] clicks still sounding
         self._click_waves = None
         self.quiet = 0          # samples of continuous input silence
@@ -553,6 +555,10 @@ class Engine:
             extra, extra_map = self.extra.read(frames)
             # each channel's chosen input, exactly as it arrived: no trim, EQ, dynamics or fader
             raw = mixer.route_inputs(hw, cable_in, extra, extra_map)
+            tc = self.tuner_ch
+            if tc is not None and 0 <= tc < raw.shape[1]:   # the tuner hears the raw input, before any processing
+                n = min(frames, len(self.tuner_buf))
+                self.tuner_buf = np.concatenate([self.tuner_buf[n:], raw[-n:, tc]])
             if self.recording:
                 self.recorder.push(raw)
             if self.playing and not self.recording:
@@ -635,6 +641,22 @@ class Engine:
             traceback.print_exc()
         dt = time.perf_counter() - t0
         self.load = max(self.load * 0.95, dt / (frames / self.sr))
+
+    NOTE_NAMES = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"]
+
+    def tuner_read(self, a4=440.0):
+        """Pitch of the tuner channel: note, cents off, Hz (or None when nothing is playing)."""
+        from .autotune import yin
+        x = self.tuner_buf.astype(np.float64)
+        if float(np.sqrt(np.mean(x ** 2))) < 1e-3:       # quieter than -60 dBFS: nothing to tune
+            return None
+        hz, conf = yin(x, self.sr, 30.0, 1600.0, 0.12)
+        if hz <= 0 or conf < 0.5:
+            return None
+        midi = 69 + 12 * math.log2(hz / a4)
+        near = int(round(midi))
+        return {"hz": round(hz, 1), "note": self.NOTE_NAMES[near % 12], "oct": near // 12 - 1,
+                "cents": round((midi - near) * 100), "conf": round(conf, 2)}
 
     def _click(self, frames):
         """The metronome for this block (mono), or None. Beats follow the session tempo; the first

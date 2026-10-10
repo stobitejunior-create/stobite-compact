@@ -589,6 +589,9 @@
     const S_ = (p, options, extra) => { const s = sel(p, options, extra); edCtl.set(key(p), { set: v => s.value = v }); return s; };
     const help = topic => !window.openGuide ? null : h('button', { class: 'help', title: 'What does this do?', onclick: () => openGuide(topic) }, '?');
     const panel = (title, topic, togglePath, ...kids) => h('div', { class: 'panel' }, h('h4', {}, title, help(topic), togglePath ? T(togglePath) : null), ...kids);
+    const tun = $('#edTuner');
+    tun.hidden = kind !== 'ch';
+    tun.onclick = () => openTuner(t);
     const byp = $('#edBypass');
     byp.hidden = kind === 'fx';
     byp.classList.toggle('on', !!st.bypass);
@@ -754,6 +757,7 @@
     ['Reverb & delay', ['reverb', 'delay']],
     ['Modulation', ['chorus', 'flanger', 'phaser', 'tremolo']],
     ['Pitch', ['tune', 'pitch']],
+    ['Restoration', ['denoise']],
     ['Colour & distortion', ['sat', 'distortion', 'bitcrush']],
     ['Utility & stereo', ['gain', 'width']],
   ];
@@ -930,6 +934,12 @@
         K(M('gain'), { label: 'Input gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 })),
         h('div', { class: 'frow' }, T(M('truepeak'), 'True peak')), bar('lim'),
         h('p', { class: 'hint' }, 'A safety net that should only catch the loudest peaks (1–3 dB).'));
+    } else if (m.type === 'denoise') {
+      kids.push(h('div', { class: 'knobs' },
+        K(M('reduction'), { label: 'Reduction', min: 0, max: 40, def: 12, format: v => '−' + Math.round(v) + ' dB', size: 48, big: true }),
+        K(M('sensitivity'), { label: 'Sensitivity', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 42, big: true }),
+        K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, color: '#3aa0ff' })),
+        h('p', { class: 'hint' }, 'Removes steady background noise (hiss, hum, air-con, buzz) and learns it by itself as it plays. Start around −12 dB; raise Sensitivity if noise is left between words, lower it if the voice sounds watery. Adds 8 ms of delay.'));
     } else if (m.type === 'reverb') {
       kids.push(h('div', { class: 'knobs' },
         K(M('size'), { label: 'Size', min: 0, max: 100, def: 60, format: v => Math.round(v) + '%', size: 46, big: true }),

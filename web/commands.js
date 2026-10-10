@@ -39,6 +39,8 @@
     ['metronome', 'Transport', 'Metronome', { k: 'k' }, () => toggleCfg('metronome', 'Metronome')],
     ['countIn', 'Transport', 'Count-in', { k: 'k', shift: 1 }, () => toggleCfg('countin', 'Count-in')],
     ['tempo', 'Transport', 'Tempo & time signature…', null, () => tempoDialog()],
+    ['tuner', 'Transport', 'Tuner…', { k: 'u', mod: 1 }, () => openTuner()],
+    ['masterAssist', 'Mix', 'Mastering assistant…', null, () => masterAssistant()],
     ['clearSolos', 'Mix', 'Clear all solos', { k: 's', alt: 1, shift: 1 }, () => clearSolos()],
     ['clearMutes', 'Mix', 'Clear all mutes', { k: 'm', alt: 1, shift: 1 }, () => clearMutes()],
     ['compare', 'View', 'Compare before / after', { k: '\\' }, () => setCompare(!S.compare)],
@@ -157,6 +159,93 @@
       h('div', { class: 'kb-grid' }, ...Object.entries(groups).map(([g, list]) => h('div', { class: 'kb-col' }, h('h4', {}, g),
         ...list.map(c => h('div', { class: 'kb-row' }, h('span', {}, c.title), h('kbd', {}, c.keys)))))),
       h('div', { class: 'acts' }, h('button', { class: 'btn accent', onclick: close }, 'Done')));
+  });
+
+  // ---- tuner: the raw input of any channel, as note + cents
+  window.openTuner = (ch) => modal((card, close) => {
+    card.classList.add('tuner-card');
+    const chans = S.mixer.order.filter(c => { const x = S.mixer.channels[c]; return x.input && x.input !== 'none'; });
+    let cur = ch ?? (window.__tunerCh ?? chans.find(c => /bass|guitar|gtr|keys|piano|vox|vocal/i.test(S.mixer.channels[c].name + ' ' + (S.mixer.channels[c].type || ''))) ?? chans[0]);
+    let a4 = +(window.__tunerA4 || 440);
+    const sel = h('select', { onchange: e => { cur = +e.target.value; start(); } }, ...chans.map(c => h('option', { value: c, selected: c === cur }, `${c + 1}: ${S.mixer.channels[c].name}`)));
+    const ref = h('input', { type: 'number', min: 415, max: 466, step: 1, value: a4, style: 'width:70px', onchange: e => { a4 = clamp(+e.target.value || 440, 415, 466); start(); } });
+    const note = h('div', { class: 'tn-note' }, '–'), oct = h('sub', {}), cents = h('div', { class: 'tn-cents' }, 'Play one note'), hz = h('div', { class: 'tn-hz' });
+    const needle = h('i', { class: 'tn-needle' });
+    const scale = h('div', { class: 'tn-scale' }, ...[-50, -25, 0, 25, 50].map(v => h('span', { style: `left:${50 + v}%` }, v > 0 ? '+' + v : v)), needle);
+    const start = () => { window.__tunerCh = cur; window.__tunerA4 = a4; send({ t: 'tuner', ch: cur, a4 }); };
+    let last = 0;
+    const onM = m => {
+      if (!document.body.contains(card)) return;
+      const t = m.tn;
+      if (!t) return;
+      if (!t.note) { if (performance.now() - last > 600) { card.classList.remove('intune'); needle.style.opacity = .25; } return; }
+      last = performance.now();
+      note.firstChild.textContent = t.note; oct.textContent = t.oct;
+      const c = clamp(t.cents, -50, 50);
+      needle.style.left = (50 + c) + '%'; needle.style.opacity = 1;
+      const ok = Math.abs(t.cents) <= 3;
+      card.classList.toggle('intune', ok);
+      cents.textContent = ok ? 'In tune' : (t.cents > 0 ? `${t.cents} cents sharp ↓` : `${-t.cents} cents flat ↑`);
+      hz.textContent = `${t.hz.toFixed(1)} Hz`;
+    };
+    note.append(oct);
+    on('meters', onM);
+    const stop = () => { send({ t: 'tuner', ch: null }); };
+    card.append(h('h3', {}, 'Tuner'),
+      h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Listen to'), h('small', {}, 'The raw input, before any processing')), sel),
+      h('div', { class: 'tn-face' }, note, scale, cents, hz),
+      h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Reference A'), h('small', {}, 'Hz')), ref),
+      h('div', { class: 'acts' }, h('button', { class: 'btn accent', onclick: () => { stop(); close(); } }, 'Done')));
+    const mo = new MutationObserver(() => { if (!document.body.contains(card) || $('#modal').hidden) { stop(); mo.disconnect(); } });
+    mo.observe($('#modal'), { attributes: true, childList: true, subtree: false });
+    start();
+  });
+
+  // ---- mastering assistant
+  window.masterAssistant = () => modal((card, close) => {
+    card.classList.add('wide');
+    let target = -14, style = 'balanced';
+    const targets = [[-14, 'Streaming / YouTube / livestream', '−14 LUFS'], [-16, 'Apple Music / podcasts', '−16 LUFS'], [-18, 'Gentle, dynamic', '−18 LUFS'], [-23, 'Broadcast (EBU R128)', '−23 LUFS'], [-11, 'Loud', '−11 LUFS']];
+    const tsel = h('select', { onchange: e => target = +e.target.value }, ...targets.map(([v, l, n]) => h('option', { value: v, selected: v === target }, `${l} (${n})`)));
+    const seg = h('div', { class: 'seg' }, ...[['balanced', 'Balanced'], ['warm', 'Warm'], ['bright', 'Bright']].map(([v, l]) => {
+      const b = h('button', { class: v === style ? 'on' : '', onclick: () => { style = v; seg.querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b)); } }, l); return b; }));
+    const bar = h('div', { class: 'progress' }, h('i'));
+    const stage = h('p', { class: 'hint' });
+    const out = h('div');
+    const go = h('button', { class: 'btn accent' }, icon('sparkle', 14), 'Analyse & master');
+    card.append(h('h3', {}, 'Mastering assistant'),
+      h('p', { class: 'hint' }, 'Listens to the busiest parts of this project, then sets the master: corrective EQ, glue compression, gentle multiband, width and a true-peak limiter, landing on your loudness target. One undo puts it back.'),
+      h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Target'), h('small', {}, 'Where it will be heard')), tsel),
+      h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Character')), seg),
+      bar, stage, out,
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
+    let busy = false;
+    const listener = m => {
+      if (!document.body.contains(card)) return;
+      if (m.progress != null) { bar.firstChild.style.width = (m.progress * 100) + '%'; stage.textContent = m.stage || ''; }
+      if (m.error) { busy = false; go.disabled = false; stage.textContent = ''; out.innerHTML = ''; out.append(h('p', { class: 'err' }, m.error)); }
+      if (m.done) {
+        busy = false; go.disabled = false; bar.firstChild.style.width = '100%'; stage.textContent = '';
+        const r = m.report, f = v => (v > 0 ? '+' : '') + (+v).toFixed(1);
+        out.innerHTML = '';
+        out.append(h('div', { class: 'ma-res' },
+          h('div', {}, h('small', {}, 'Before'), h('b', {}, `${r.before.lufs} LUFS`), h('span', {}, `peaks ${r.before.tp} dBTP`)),
+          h('div', { class: 'ma-arrow' }, '→'),
+          h('div', {}, h('small', {}, 'After'), h('b', {}, `${r.after.lufs} LUFS`), h('span', {}, `peaks ${r.after.tp} dBTP`))),
+          h('ul', { class: 'ma-notes' }, ...r.notes.map(n => h('li', {}, n)), h('li', {}, `Glue compression ${f(r.glue)} dB, limiter ${f(r.limiter)} dB`)),
+          h('div', { class: 'frow' },
+            h('button', { class: 'btn', onpointerdown: () => setCompare(true), onpointerup: () => setCompare(false), onpointerleave: () => S.compare && setCompare(false) }, 'Hold to hear before'),
+            h('button', { class: 'btn', onclick: () => { send({ t: 'mixundo' }); toast('Master put back'); close(); } }, 'Undo'),
+            h('button', { class: 'btn', onclick: () => { close(); showView('mixer'); openEditor('master'); } }, 'Open the master chain')));
+      }
+    };
+    on('assist', listener);
+    go.onclick = async () => {
+      if (busy) return;
+      busy = true; go.disabled = true; out.innerHTML = ''; bar.firstChild.style.width = '2%'; stage.textContent = 'Starting…';
+      try { await api('master-assist', { target, style }); }
+      catch (e) { busy = false; go.disabled = false; stage.textContent = ''; out.append(h('p', { class: 'err' }, e.message)); }
+    };
   });
 
   // ---- tempo, time signature, tap tempo

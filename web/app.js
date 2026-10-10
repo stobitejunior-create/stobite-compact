@@ -27,6 +27,7 @@ function connect() {
       case 'info': S.info = m.info; emit('info'); break;
       case 'export': emit('export', m.job); break;
       case 'wing': S.wing[m.addr] = m.v; emit('wingval', m); break;
+      case 'assist': emit('assist', m); break;
       case 'compare': S.compare = m.on; S.compareMatch = m.match; emit('compare'); break;
       case 'error': toast(m.msg, true); break;
       case 'toast': toast(m.msg); break;

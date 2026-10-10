@@ -20,7 +20,8 @@
     histCanvas = h('canvas', { class: 'hist' });
     box.append(h('div', { class: 'card lu-card' },
       h('div', { class: 'card-head' }, h('h3', {}, 'Loudness'), h('span', { class: 'grow' }), target,
-        h('button', { class: 'btn', onclick: () => { api('loudness-reset', {}); hist.length = 0; toast('Loudness measurement reset'); } }, 'Reset')),
+        h('button', { class: 'btn', onclick: () => { api('loudness-reset', {}); hist.length = 0; toast('Loudness measurement reset'); } }, 'Reset'),
+        h('button', { class: 'btn accent', onclick: () => masterAssistant() }, icon('sparkle', 14), 'Mastering assistant')),
       h('div', { class: 'lu-row' },
         h('div', { class: 'lu' }, h('span', {}, 'Momentary'), els.mom, h('small', {}, 'LUFS · 0.4 s')),
         h('div', { class: 'lu' }, h('span', {}, 'Short-term'), els.short, h('small', {}, 'LUFS · 3 s')),
