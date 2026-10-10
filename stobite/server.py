@@ -83,6 +83,8 @@ class App:
             await self.broadcast({"t": "transport", **e.transport()})
         elif kind == "status":
             await self.broadcast({"t": "info", "info": self.info()})
+        elif kind == "notice":
+            await self.broadcast({"t": "toast", "msg": e.notice, "long": True})
         elif kind == "export":
             await self.broadcast({"t": "export", "job": e.export_job})
 
@@ -122,6 +124,7 @@ class App:
     def info(self):
         i = self.engine.info()
         i["remote"] = bool(self.engine.cfg.get("remote", False))
+        i["locked"] = self.locked
         cb = self.engine.cables
         i["cables"] = {"status": cb.status, "error": cb.error, "names": cb.names}
         i["urls"] = [f"http://{ip}:{PORT}" for ip in lan_ips()] if i["remote"] else []
@@ -207,9 +210,20 @@ class App:
             self.clients.discard(ws)
         return ws
 
+    # Service lock: during a service nothing can change the mix or the edit by accident (from this
+    # computer or a phone). Playing, stopping, recording and listening still work.
+    LOCKED_WS = {"set", "edit", "undo", "redo", "mixundo", "mixredo", "wing"}
+    OPEN_WHEN_LOCKED = {"sections", "find-sections", "align", "video-align", "devices", "info", "projects", "peaks", "rec-peaks", "rec-check", "catalog", "templates", "template",
+                        "settings-library", "mix-read", "plugin-params", "download", "reveal", "export", "export-estimate",
+                        "save", "lock", "loudness-reset", "project-export"}
+    locked = False
+    LOCK_MSG = "The mix is locked for the service. Unlock it with the padlock at the top."
+
     async def handle(self, ws, m):
         e = self.engine
         t = m.get("t")
+        if self.locked and t in self.LOCKED_WS:
+            raise RuntimeError(self.LOCK_MSG)
         if t == "set":
             now = time.time()
             if now - self.mix_ck > 1.0:  # one undo step per burst of moves
@@ -288,6 +302,15 @@ class App:
             body = await request.json()
         q = request.query
         try:
+            if self.locked and name not in self.OPEN_WHEN_LOCKED:
+                raise RuntimeError(self.LOCK_MSG)
+            if name == "lock":
+                on = bool(body.get("on"))
+                if not on and e.cfg.get("pin") and str(body.get("pin", "")) != str(e.cfg.get("pin")):
+                    raise RuntimeError("Wrong PIN")
+                self.locked = on
+                await self.broadcast({"t": "info", "info": self.info()})
+                return web.json_response({"locked": on})
             if name == "devices":
                 return web.json_response(list_devices())
             if name == "info":
@@ -300,7 +323,7 @@ class App:
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
-                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db"):
+                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db", "rec_at_end"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
@@ -350,8 +373,43 @@ class App:
                 return web.json_response({"ok": True})
             if name == "export":
                 job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"),
-                               body.get("depth", "24"), body.get("kbps"), body.get("channels", 2))
+                               body.get("depth", "24"), body.get("kbps"), body.get("channels", 2), body.get("extra"))
                 return web.json_response(job)
+            if name == "find-sections":
+                from . import postservice
+                secs = await asyncio.get_running_loop().run_in_executor(None, postservice.find_sections, e.session, e.mixer.snapshot())
+                return web.json_response(secs)
+            if name == "sections":
+                from . import postservice
+                return web.json_response([{"name": n, "start": a, "end": b} for n, a, b in postservice.sections_from_markers(e.session)])
+            if name == "align":
+                from . import align
+                res = await asyncio.get_running_loop().run_in_executor(None, align.analyse, e.session, int(body["ref"]), [int(c) for c in body["chans"]])
+                return web.json_response(res)
+            if name == "video-align":
+                from . import postservice
+                reader = await request.multipart()
+                tmp = None
+                async for part in reader:
+                    if part.filename:
+                        fd, tmp = tempfile.mkstemp(suffix=os.path.splitext(part.filename)[1] or ".mp4")
+                        with os.fdopen(fd, "wb") as f:
+                            while chunk := await part.read_chunk(1 << 20):
+                                f.write(chunk)
+                if not tmp:
+                    raise RuntimeError("No file received")
+                loop = asyncio.get_running_loop()
+                say = lambda fr: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self.broadcast({"t": "valign", "progress": round(fr, 2)})))
+                try:
+                    res = await loop.run_in_executor(None, postservice.video_offset, e.session, tmp, say)
+                finally:
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+                return web.json_response(res)
+            if name == "rec-check":
+                return web.json_response(e.rec_check())
             if name == "rec-peaks":
                 rec = e.recorder
                 if not e.recording:

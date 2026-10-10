@@ -14,7 +14,7 @@ try:
 except Exception:  # pragma: no cover - optional
     pb = None
 
-KINDS = ("denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+KINDS = ("proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 NOTE_BEATS = {"1/2": 2.0, "1/4": 1.0, "1/4d": 1.5, "1/8": 0.5, "1/8d": 0.75, "1/8t": 1 / 3, "1/16": 0.25}
 
@@ -95,6 +95,69 @@ class Denoiser:
         return y.T.astype(np.float32)
 
 
+class Proximity:
+    """The bass boost a directional mic gives when the source is very close.
+    "add": warmth as if the singer were right on the mic (a low shelf).
+    "tame": watches the low end against the middle of the voice; when the singer leans in and it
+    builds up (boom), the lows are turned down by as much as it rose, up to `amount` dB."""
+
+    def __init__(self, fs, nch):
+        self.fs, self.nch = fs, nch
+        self.cut = 0.0
+        self.base = None       # the usual low-to-mid balance of this voice (learned as it plays)
+        self.shelf_g = None
+        self._mk(0.0)
+        # steep detectors (each filter twice) so the low band really is just the low band
+        f_lo = pb.Pedalboard([pb.LowpassFilter(250.0), pb.LowpassFilter(250.0), pb.LowpassFilter(250.0)]) if pb else None
+        f_mid = pb.Pedalboard([pb.HighpassFilter(800.0), pb.HighpassFilter(800.0), pb.LowpassFilter(3000.0), pb.LowpassFilter(3000.0)]) if pb else None
+        self.det = (f_lo, f_mid)
+
+    def _mk(self, gain):
+        if pb is None:
+            self.shelf = None
+            return
+        if self.shelf_g is None or abs(gain - self.shelf_g) > 0.05:
+            if getattr(self, "shelf", None) is None:
+                self.shelf = pb.LowShelfFilter(cutoff_frequency_hz=self.freq if hasattr(self, "freq") else 200.0, gain_db=gain, q=0.7)
+            else:
+                self.shelf.gain_db = gain
+            self.shelf_g = gain
+
+    def process(self, x, p):
+        if pb is None:
+            return x
+        self.freq = float(p.get("freq", 200))
+        self.shelf.cutoff_frequency_hz = self.freq
+        amount = float(np.clip(p.get("amount", 6), 0, 18))
+        if p.get("mode", "tame") == "add":
+            self._mk(amount)
+        else:
+            m = x.mean(axis=1, keepdims=True).T.astype(np.float32)
+            lo = self.det[0](m, self.fs, reset=False); mid = self.det[1](m, self.fs, reset=False)
+            elo, emid = float(np.mean(lo ** 2)), float(np.mean(mid ** 2))
+            if emid > 1e-7:                       # only while the voice is there
+                k = len(x) / self.fs
+                raw = 10 * np.log10((elo + 1e-12) / emid)
+                self.r_s = raw if getattr(self, "r_s", None) is None else self.r_s + (raw - self.r_s) * min(1.0, k / 0.3)
+                ratio = self.r_s                     # smoothed over ~0.3 s: single blocks jump around
+                # the voice's normal balance: learned quickly when it gets less boomy, but only very
+                # slowly (about a minute) when it gets more, so a singer leaning in counts as boom
+                tc = 2.0 if self.base is None or ratio < self.base else 60.0
+                self.base = ratio if self.base is None else self.base + (ratio - self.base) * min(1.0, k / tc)
+                over = max(0.0, ratio - self.base - 1.0) * 1.5      # boom beyond normal (x1.5: a shelf only partly reaches the lowest notes)
+                target = min(over, amount)
+                rate = 0.35 if target > self.cut else 0.08
+                self.cut += (target - self.cut) * min(1.0, rate * k * 20)
+            self._mk(-self.cut)
+        return self.shelf(x.T.astype(np.float32), self.fs, reset=False).T
+
+    def reading(self):
+        return round(self.cut, 1)
+
+
+LATENCY = {"denoise": Denoiser.N - Denoiser.HOP}   # samples each effect delays the sound by
+
+
 class Effect:
     def __init__(self, kind, fs, nch):
         self.kind, self.fs, self.nch = kind, fs, nch
@@ -107,6 +170,10 @@ class Effect:
     def set(self, m):
         self.p = dict(m)
         k, p = self.kind, self.p
+        if k == "proximity":
+            if not isinstance(self.dev, Proximity):
+                self.dev = Proximity(self.fs, self.nch)
+            return
         if k == "denoise":
             if not isinstance(self.dev, Denoiser):
                 self.dev = Denoiser(self.fs, self.nch)
@@ -181,6 +248,8 @@ class Effect:
         if frames == 0:
             return x
         mix = float(np.clip(p.get("mix", 100) / 100, 0, 1))
+        if k == "proximity":
+            return self.dev.process(x, p).astype(np.float32)
         if k == "denoise":
             y = self.dev.process(x)
             return (x * (1 - mix) + y * mix).astype(np.float32) if mix < 0.999 else y

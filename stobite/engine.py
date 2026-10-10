@@ -21,7 +21,7 @@ from .cables import CableIO
 from .inputs import ExtraInputs
 from .guard import LoopGuard
 from .listen import ListenOut, pick_listen_device, is_wing_name
-from .session import Session, Reader, Recorder, home_dir, list_sessions, safe_name, scratch_dir
+from .session import Session, Reader, Recorder, home_dir, list_sessions, safe_name, scratch_dir, recover_interrupted
 
 DEFAULT_CFG = {
     "input": None, "output": None, "sr": 48000, "block": 256, "nch": 48,
@@ -503,10 +503,17 @@ class Engine:
             self.stream_out.error = ""
 
     def _guard_loop(self):
-        """Look for feedback a few times a second while sound is going out."""
+        """Look for feedback a few times a second while sound is going out (and watch the disk)."""
         while True:
             time.sleep(0.2)
             try:
+                rec = self.recorder
+                if self.recording and getattr(rec, "disk_low", False):
+                    self.stop()
+                    self.notify("Recording stopped: the disk is full. Everything up to now is saved.")
+                elif self.recording and getattr(rec, "disk_warn", False) and not getattr(rec, "warned", False):
+                    rec.warned = True
+                    self.notify("The disk is nearly full: about 15 minutes of recording left.")
                 if self.stream is None or self.asleep or self.guard.tripped:
                     continue
                 names = [c.get("name", "") for c in self.mixer.state.get("channels", [])]
@@ -842,11 +849,30 @@ class Engine:
             self.feeder.seek(self.playhead)
         self.emit("transport")
 
+    def notify(self, text):
+        """A message every screen should show (crash recovery, disk space...)."""
+        self.notice = text
+        self.emit("notice")
+
+    def rec_check(self):
+        """How long the disk can record the armed channels for."""
+        s = self.session
+        armed = sum(1 for a in (s.armed if s else []) if a) or 1
+        try:
+            free = shutil.disk_usage(s.dir if s else home_dir()).free
+        except Exception:
+            free = 0
+        secs = free / (self.sr * 3 * armed)
+        return {"free": free, "armed": armed, "seconds": int(secs), "gbPerHour": round(self.sr * 3 * armed * 3600 / 1e9, 1)}
+
     def record(self):
         if self.recording or self.session is None:
             return
         if self.stream is None or self.dev_ins == 0:
             raise RuntimeError("No input device running - pick your WING in Setup first")
+        chk = self.rec_check()
+        if chk["seconds"] < 10 * 60:
+            raise RuntimeError(f"Only {chk['seconds'] // 60} minutes of space left on this disk for {chk['armed']} channels. Free some space (or disarm unused channels) first.")
         if self.counting:
             return
         self.promote()
@@ -943,6 +969,13 @@ class Engine:
         s = Session.load(name, self.nch)
         if s.nch != self.nch:
             s.nch = self.nch
+        try:
+            n = recover_interrupted(s)
+            if n:
+                s.save(s.mixer_state)
+                self.notify(f"Recovered {n} track{'s' if n != 1 else ''} from a recording that was cut off (crash or power loss).")
+        except Exception:
+            traceback.print_exc()
         self.session = s
         self.playhead = 0
         if s.mixer_state:
@@ -1070,7 +1103,7 @@ class Engine:
         return {"seconds": max(end - start, 0) / s.sr, "tail": 2.0, "sr": s.sr, "tracks": tracks,
                 "projectBytes": proj, "freeBytes": shutil.disk_usage(outdir).free}
 
-    def export(self, kind="mix", fmt="wav", start=None, end=None, target=None, depth="24", kbps=None, channels=2):
+    def export(self, kind="mix", fmt="wav", start=None, end=None, target=None, depth="24", kbps=None, channels=2, extra=None):
         if self.export_job and self.export_job.get("running"):
             raise RuntimeError("An export is already running")
         s = self.session
@@ -1084,7 +1117,7 @@ class Engine:
             raise RuntimeError("Opus needs a 48 kHz session. Pick MP3 or another format.")
         if fmt == "mp3" and s.sr > 48000:
             raise RuntimeError("MP3 can't go above 48 kHz. Pick WAV, AIFF or FLAC.")
-        opts = {"depth": str(depth), "kbps": kbps, "channels": 1 if int(channels or 2) == 1 else 2}
+        opts = {"depth": str(depth), "kbps": kbps, "channels": 1 if int(channels or 2) == 1 else 2, **(extra or {})}
         threading.Thread(target=self._export, args=(job, kind, fmt, start, end, target, opts), daemon=True).start()
         return job
 
@@ -1119,49 +1152,96 @@ class Engine:
                 job["file"] = folder
                 job["bytes"] = sum(os.path.getsize(f.name) for f in files.values())
             else:
+                from . import postservice
+                tail = 2 * s.sr
+
                 def make_mix(extra_db=0.0):
                     st = self.mixer.snapshot()
                     st["master"]["fader"] = min(st["master"]["fader"] + extra_db, 24.0)
                     st["master"]["mute"] = False
-                    m = Mixer(s.nch, s.sr, st)
-                    return m
-                tail = 2 * s.sr
-                passes = 2 if target is not None else 1
-                gain = 0.0
-                if target is not None:
-                    # pass 1: measure integrated loudness of the mix as it stands
-                    mix = make_mix()
-                    mix.set_master_limiters(False)
-                    pos = start
-                    while pos < end:
-                        n = min(block, end - pos)
-                        mix.auto = self.auto_for(s, pos)
-                        mix.process(reader.render(pos, n, clips))
-                        pos += n
-                        job["progress"] = (pos - start) / (end - start) / passes
-                    measured = mix.loud.integrated()
-                    if measured > -70:
-                        gain = max(min(float(target) - measured, 24.0), -24.0)
-                    job["measured"] = round(measured, 1)
-                    job["gain"] = round(gain, 1)
-                mix = make_mix(gain)
-                # fresh plugin instances so the live engine's copies aren't shared across threads
+                    if kind == "podcast" and opts.get("speechOnly"):
+                        # just the speaking: channels on the Preaching bus or set up as preacher / host
+                        for ch in st["channels"]:
+                            ch["solo"] = False
+                            if not (ch.get("out") == "speech" or ch.get("type") in postservice.SPEECH):
+                                ch["mute"] = True
+                    return Mixer(s.nch, s.sr, st)
+
+                def rd(pos, n):
+                    """The recording from pos (which may be before the start: silence there)."""
+                    if pos >= 0:
+                        return reader.render(pos, n, clips) if pos < end else np.zeros((n, s.nch), np.float32)
+                    out = np.zeros((n, s.nch), np.float32)
+                    k = min(n, -pos)
+                    if n > k:
+                        out[k:] = reader.render(0, n - k, clips)
+                    return out
+
+                def mix_file(path, a, b, p0, p1, nout, kw, target, with_tail=True):
+                    """Render [a, b) of the mix into path (two passes when matching a loudness target)."""
+                    span = max(b - a, 1)
+                    passes = 2 if target is not None else 1
+                    gain = 0.0
+                    if target is not None:
+                        mix = make_mix()
+                        mix.set_master_limiters(False)
+                        pos = a
+                        while pos < b:
+                            n = min(block, b - pos)
+                            mix.auto = self.auto_for(s, max(pos, 0))
+                            mix.process(rd(pos, n))
+                            pos += n
+                            job["progress"] = p0 + (p1 - p0) * (pos - a) / span / passes
+                        measured = mix.loud.integrated()
+                        if measured > -70:
+                            gain = max(min(float(target) - measured, 24.0), -24.0)
+                        job["measured"], job["gain"] = round(measured, 1), round(gain, 1)
+                    mix = make_mix(gain)
+                    stop = b + (tail if with_tail else 0)
+                    with sf.SoundFile(path, "w", s.sr, nout, **kw) as f:
+                        pos = a
+                        while pos < stop:
+                            n = min(block, stop - pos)
+                            mix.auto = self.auto_for(s, max(pos, 0))
+                            y = mix.process(rd(pos, n) if pos < b else np.zeros((n, s.nch), np.float32))
+                            f.write(y.mean(axis=1) if nout == 1 else y)
+                            pos += n
+                            job["progress"] = min(p0 + (p1 - p0) * ((passes - 1) + (pos - a) / max(stop - a, 1)) / passes, p1)
+                    return round(mix.loud.integrated(), 1)
+
                 nout = opts.get("channels", 2)
-                ext, kw = self.out_format(fmt, opts.get("depth", "24"), opts.get("kbps"), nout)
-                path = os.path.join(outdir, f"{s.name} mix {stamp}.{ext}")
-                with sf.SoundFile(path, "w", s.sr, nout, **kw) as f:
-                    pos = start
-                    while pos < end + tail:
-                        n = min(block, end + tail - pos)
-                        d = reader.render(pos, n, clips) if pos < end else np.zeros((n, s.nch), np.float32)
-                        mix.auto = self.auto_for(s, pos)
-                        y = mix.process(d)
-                        f.write(y.mean(axis=1) if nout == 1 else y)
-                        pos += n
-                        job["progress"] = min(((passes - 1) + (pos - start) / (end + tail - start)) / passes, 1)
-                job["file"] = path
-                job["bytes"] = os.path.getsize(path)
-                job["lufs"] = round(mix.loud.integrated(), 1)
+                if kind == "sections":
+                    secs = opts.get("sections") or postservice.sections_from_markers(s)
+                    if not secs:
+                        raise RuntimeError("No sections: add markers at the start of each song (or use Find songs) first.")
+                    ext, kw = self.out_format(fmt, opts.get("depth", "24"), opts.get("kbps"), nout)
+                    folder = os.path.join(outdir, f"{s.name} sections {stamp}")
+                    os.makedirs(folder, exist_ok=True)
+                    total = sum(max(int(e_) - int(a_), 1) for _, a_, e_ in secs)
+                    done = 0
+                    for k, (name, a_, e_) in enumerate(secs):
+                        a_, e_ = int(a_), int(e_)
+                        fn = f"{k + 1:02d} {safe_name(name) or 'Section'}.{ext}"
+                        mix_file(os.path.join(folder, fn), a_, e_, done / total, (done + e_ - a_) / total, nout, kw, target)
+                        done += e_ - a_
+                    job["file"] = folder
+                    job["bytes"] = sum(os.path.getsize(os.path.join(folder, x)) for x in os.listdir(folder))
+                elif kind == "podcast":
+                    tags = opts.get("tags") or {}
+                    nout = 1 if opts.get("mono", True) else 2
+                    ext, kw = self.out_format("mp3", "16", opts.get("kbps") or 96, nout)
+                    title = tags.get("title") or f"{s.name}"
+                    path = os.path.join(outdir, f"{safe_name(title)} {stamp}.mp3")
+                    job["lufs"] = mix_file(path, start, end, 0.0, 1.0, nout, kw, target if target is not None else -16.0)
+                    postservice.tag_mp3(path, title=title, artist=tags.get("artist", ""), album=tags.get("album", ""),
+                                        year=tags.get("year", time.strftime("%Y")), comment=tags.get("comment", ""))
+                    job["file"], job["bytes"] = path, os.path.getsize(path)
+                else:
+                    ext, kw = self.out_format(fmt, opts.get("depth", "24"), opts.get("kbps"), nout)
+                    label = "for video" if kind == "video" else "mix"
+                    path = os.path.join(outdir, f"{s.name} {label} {stamp}.{ext}")
+                    job["lufs"] = mix_file(path, start, end, 0.0, 1.0, nout, kw, target, with_tail=(kind != "video"))
+                    job["file"], job["bytes"] = path, os.path.getsize(path)
             reader.close()
         except Exception as ex:
             traceback.print_exc()

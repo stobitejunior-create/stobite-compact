@@ -40,7 +40,12 @@
     ['countIn', 'Transport', 'Count-in', { k: 'k', shift: 1 }, () => toggleCfg('countin', 'Count-in')],
     ['tempo', 'Transport', 'Tempo & time signature…', null, () => tempoDialog()],
     ['tuner', 'Transport', 'Tuner…', { k: 'u', mod: 1 }, () => openTuner()],
+    ['recPlayhead', 'Transport', 'Record from the playhead (takes)', null, () => toggleRecFrom()],
+    ['alignMics', 'Mix', 'Align mics & check polarity…', null, () => alignMics()],
+    ['findSongs', 'File', 'Find songs & sermon…', null, () => findSongs()],
+    ['videoAlign', 'File', 'Line up with a video…', null, () => videoAlign()],
     ['masterAssist', 'Mix', 'Master to target…', null, () => masterAssistant()],
+    ['lock', 'Mix', 'Lock / unlock the mix (service lock)', { k: 'l', mod: 1, shift: 1 }, () => toggleLock()],
     ['clearSolos', 'Mix', 'Clear all solos', { k: 's', alt: 1, shift: 1 }, () => clearSolos()],
     ['clearMutes', 'Mix', 'Clear all mutes', { k: 'm', alt: 1, shift: 1 }, () => clearMutes()],
     ['compare', 'View', 'Compare before / after', { k: '\\' }, () => setCompare(!S.compare)],
@@ -248,6 +253,115 @@
     };
   });
 
+  // ---- record from the playhead (takes) instead of after the last recording
+  window.toggleRecFrom = async () => {
+    const atEnd = S.info?.cfg?.rec_at_end !== false;
+    S.info = await tryApi('config', { rec_at_end: !atEnd }); emit('info');
+    toast(atEnd ? 'Recording starts at the playhead: record again over a part to make another take (right-click a clip → Takes)' : 'Recording starts after the last recording', false, 6000);
+  };
+
+  // ---- mic alignment & polarity
+  window.alignMics = () => modal((card, close) => {
+    card.classList.add('wide');
+    const used = new Set((S.session?.clips || []).map(c => c.track));
+    const chans = S.mixer.order.filter(c => used.has(c) && !S.mixer.channels[c].mute);
+    if (!chans.length) { card.append(h('h3', {}, 'Align mics'), h('p', { class: 'hint' }, 'Record something first: alignment is measured on the recording.'), h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'))); return; }
+    const nm = c => `${c + 1}: ${S.mixer.channels[c].name}`;
+    const drums = ['kick', 'snare', 'tom', 'hihat', 'overhead', 'room', 'perc'];
+    let ref = chans.find(c => ['overhead', 'room'].includes(S.mixer.channels[c].type)) ?? chans[0];
+    const refSel = h('select', { onchange: e => { ref = +e.target.value; } }, ...chans.map(c => h('option', { value: c, selected: c === ref }, nm(c))));
+    const picks = new Set(chans.filter(c => c !== ref && drums.includes(S.mixer.channels[c].type)));
+    const list = h('div', { class: 'dca-list' }, ...chans.map(c => h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: picks.has(c), onchange: e => e.target.checked ? picks.add(c) : picks.delete(c) }), nm(c))));
+    const out = h('div');
+    const go = h('button', { class: 'btn accent', onclick: async () => {
+      const cs = [...picks].filter(c => c !== ref);
+      if (!cs.length) return toast('Tick the mics to check', true);
+      go.disabled = true; out.innerHTML = ''; out.append(h('p', { class: 'hint' }, 'Listening to the recording…'));
+      try {
+        const res = await api('align', { ref, chans: cs });
+        out.innerHTML = '';
+        const rows = res.map(r => {
+          const sure = r.match >= 0.3, earlier = r.delay_ms > 0.05;
+          const apply = h('input', { type: 'checkbox', checked: sure && (earlier || r.flip) });
+          const what = !sure ? 'Not enough shared sound to tell' :
+            [earlier ? `delay ${r.delay_ms.toFixed(2)} ms` : r.delay_ms < -0.05 ? `arrives ${(-r.delay_ms).toFixed(2)} ms after the reference (leave it)` : 'already lined up',
+             r.flip ? 'flip polarity' : null].filter(Boolean).join(' · ');
+          return { r, apply, el: h('div', { class: 'al-row' + (sure ? '' : ' weak') }, apply, h('b', {}, nm(r.ch)), h('span', {}, what), h('span', { class: 'hint' }, `match ${Math.round(r.match * 100)}%`)) };
+        });
+        out.append(h('p', { class: 'hint' }, `Measured on ${res[0]?.start ?? 0} s into the recording against ${nm(ref)}.`), ...rows.map(x => x.el),
+          h('div', { class: 'acts' }, h('button', { class: 'btn accent', onclick: () => {
+            let n = 0;
+            for (const { r, apply } of rows) if (apply.checked) {
+              if (r.delay_ms > 0.05) setParam(['channels', r.ch, 'delay'], Math.round(r.delay_ms * 100) / 100);
+              if (r.flip) setParam(['channels', r.ch, 'phase'], !S.mixer.channels[r.ch].phase);
+              n++;
+            }
+            toast(n ? `Aligned ${n} mic${n > 1 ? 's' : ''}. Use A/B or the channel bypass to compare.` : 'Nothing changed'); close();
+          } }, 'Apply ticked')));
+      } catch (e) { out.innerHTML = ''; out.append(h('p', { class: 'err' }, e.message)); }
+      go.disabled = false;
+    } }, 'Analyse');
+    card.append(h('h3', {}, 'Align mics & check polarity'),
+      h('p', { class: 'hint' }, 'Close mics hear a drum a moment before the overheads; a mic wired the other way round cancels the others. Both make the kit thin and hollow. This compares each mic with a reference on the recording.'),
+      h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Reference'), h('small', {}, 'Usually the overheads or room mic')), refSel),
+      h('h4', {}, 'Check these mics'), list, out,
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
+  });
+
+  // ---- find songs & sermon -> markers
+  window.findSongs = () => modal(async (card, close) => {
+    card.append(h('h3', {}, 'Find songs & sermon'), h('p', { class: 'hint' }, 'Looking through the recording…'));
+    let secs = [];
+    try { secs = await api('find-sections'); } catch (e) { card.append(h('p', { class: 'err' }, e.message)); return; }
+    card.lastChild.remove();
+    const mm = s => { const t = Math.round(s / (S.session?.sr || 48000)); return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`; };
+    if (!secs.length) { card.append(h('p', { class: 'hint' }, 'Nothing found. Set each channel’s instrument (and the preacher’s mic) so songs and speaking can be told apart.'), h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'))); return; }
+    const rows = secs.map(sc => { const name = h('input', { value: sc.name }); const on = h('input', { type: 'checkbox', checked: true }); return { sc, name, on, el: h('div', { class: 'al-row' }, on, name, h('span', { class: 'hint' }, `${mm(sc.start)} – ${mm(sc.end)}`)) }; });
+    card.append(h('p', { class: 'hint' }, 'Rename them if you like, then add them as markers. Each marker starts a section you can export on its own (Export → Each section).'), ...rows.map(r => r.el),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel'), h('button', { class: 'btn accent', onclick: () => {
+        const keep = rows.filter(r => r.on.checked);
+        keep.forEach((r, i) => {
+          send({ t: 'edit', op: 'marker', args: { pos: r.sc.start, name: r.name.value || r.sc.name } });
+          const next = keep[i + 1];
+          if (!next || next.sc.start - r.sc.end > (S.session?.sr || 48000) * 2) send({ t: 'edit', op: 'marker', args: { pos: r.sc.end, name: '(gap)' } });
+        });
+        toast(`Added ${keep.length} section${keep.length === 1 ? '' : 's'}`); close();
+      } }, 'Add as markers')));
+  });
+
+  // ---- line up with a livestream video
+  window.videoAlign = () => modal((card, close) => {
+    const file = h('input', { type: 'file', accept: 'video/*,audio/*,.mp4,.mov,.m4a,.mp3,.wav' });
+    const bar = h('div', { class: 'progress' }, h('i')), out = h('div'), stage = h('p', { class: 'hint' });
+    const listener = m => { if (document.body.contains(card) && m.progress != null) { bar.firstChild.style.width = (40 + m.progress * 60) + '%'; stage.textContent = 'Matching the sound…'; } };
+    on('valign', listener);
+    const go = h('button', { class: 'btn accent', onclick: () => {
+      const f = file.files[0]; if (!f) return toast('Choose the video (or its audio) first', true);
+      go.disabled = true; out.innerHTML = ''; stage.textContent = 'Reading the file…';
+      const fd = new FormData(); fd.append('file', f, f.name);
+      const x = new XMLHttpRequest();
+      x.upload.onprogress = e => { if (e.lengthComputable) bar.firstChild.style.width = (e.loaded / e.total * 40) + '%'; };
+      x.onload = () => {
+        go.disabled = false; stage.textContent = ''; bar.firstChild.style.width = '100%';
+        let r; try { r = JSON.parse(x.responseText); } catch (e) { r = { error: 'Something went wrong' }; }
+        if (x.status >= 400 || r.error) { out.append(h('p', { class: 'err' }, r.error || 'Could not read that file')); return; }
+        const sr = S.session?.sr || 48000, t = Math.abs(r.offset), mm = `${Math.floor(t / 60)}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+        out.append(h('p', {}, r.offset >= 0 ? `The video starts ${mm} into the recording.` : `The video starts ${mm} before the recording.`),
+          h('p', { class: 'hint' }, r.match >= 0.15 ? 'A clear match.' : 'A weak match: check it in your video editor.'),
+          h('div', { class: 'frow' }, h('button', { class: 'btn accent', onclick: async () => {
+            const start = Math.round(r.offset * sr), end = start + Math.round(r.length * sr);
+            await tryApi('export', { kind: 'video', fmt: 'wav', depth: '24', start, end });
+            toast('Exporting the mix lined up with the video (Exports folder). Put it on the video in your editor, starting at 0.', false, 8000); close();
+          } }, 'Export the mix for this video')));
+      };
+      x.onerror = () => { go.disabled = false; out.append(h('p', { class: 'err' }, 'Upload failed')); };
+      x.open('POST', '/api/video-align'); x.send(fd);
+    } }, 'Find where it starts');
+    card.append(h('h3', {}, 'Line up with a video'),
+      h('p', { class: 'hint' }, 'Choose the livestream recording (or any video of the service). The app finds where it starts in this recording by matching the sound, then exports your mix the same length, ready to drop onto the video.'),
+      file, bar, stage, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
+  });
+
   // ---- tempo, time signature, tap tempo
   window.tempoDialog = () => modal((card, close) => {
     const bpmIn = h('input', { type: 'number', min: 30, max: 300, step: 1, value: Math.round(+S.mixer?.tempo || 120), style: 'width:90px' });
@@ -290,6 +404,25 @@
     document.body.classList.toggle('comparing', !!S.compare);
   });
   $('#btnLoop').after(metro, count, ab);
+  // ---- service lock: the padlock freezes the mix; play / stop / record keep working
+  const lockBtn = h('button', { class: 'tbtn lockb', id: 'btnLock', title: 'Service lock: freeze the mix so nothing changes by accident (⇧⌘L)', onclick: () => toggleLock() }, icon('unlock', 17));
+  $('#top .status')?.prepend(lockBtn);
+  window.toggleLock = async () => {
+    const on = !S.info?.locked;
+    let pin = '';
+    if (!on) {
+      if (S.info?.hasPin) { pin = prompt('Enter the PIN to unlock the mix'); if (pin === null) return; }
+      else if (!confirm('Unlock the mix? Changes will be possible again.')) return;
+    }
+    try { await api('lock', { on, pin }); toast(on ? 'Mix locked for the service' : 'Mix unlocked'); }
+    catch (e) { toast(e.message, true); }
+  };
+  on('info', () => {
+    const lk = !!S.info?.locked;
+    document.body.classList.toggle('locked', lk);
+    lockBtn.classList.toggle('on', lk);
+    lockBtn.innerHTML = ''; lockBtn.append(icon(lk ? 'lock' : 'unlock', 17));
+  });
   $('#clock').after(tempo);
   let clockBars = false;
   try { clockBars = localStorage.getItem('stobite.clock') === 'bars'; } catch (e) { }

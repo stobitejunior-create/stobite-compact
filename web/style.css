@@ -732,3 +732,26 @@ body.comparing #top { box-shadow: inset 0 -2px 0 var(--yellow); }
 .ma-arrow { background: none !important; font-size: 20px; color: var(--faint); min-width: 0 !important; }
 .ma-notes { margin: 8px 0; padding-left: 18px; color: var(--dim); } .ma-notes li { margin: 3px 0; }
 .btn.clr[hidden], #edTuner[hidden], #edBypass[hidden] { display: none; }
+
+/* service lock: controls are frozen; transport, tabs, scrolling and the padlock still work */
+.tbtn.lockb.on { background: var(--yellow); color: #000; border-color: var(--yellow); }
+body.locked main .knob, body.locked main .fader, body.locked main .tog, body.locked main select, body.locked main input,
+body.locked main .eqthumb, body.locked main .sname, body.locked main .sicon, body.locked #editor .sheet-body, body.locked #tcanvas,
+body.locked main .btn:not(.lockok), body.locked #theads button, body.locked #theads input { pointer-events: none; }
+body.locked main .strips, body.locked #editor .sheet-body { filter: saturate(.75); }
+body.locked #top { box-shadow: inset 0 -2px 0 var(--yellow); }
+body.locked .view.on::before { content: "Mix locked for the service"; position: absolute; top: 6px; right: 12px; z-index: 5; font-size: 11px; font-weight: 700;
+  background: var(--yellow); color: #000; padding: 3px 9px; border-radius: 99px; pointer-events: none; }
+
+/* DCA strips, stereo pair and DCA chips */
+.strip.dca .dca-members { font-size: 11px; color: var(--dim); text-align: center; }
+.dca-names { display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; color: var(--faint); text-align: center; min-height: 60px; }
+.dca-names span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dca-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 6px 14px; max-height: 50vh; overflow: auto; margin: 6px 0; }
+.dot-c { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.pairchip { font-size: 9.5px; font-weight: 800; background: var(--blue); color: #fff; border-radius: 4px; padding: 0 5px; align-self: center; }
+.dcachip { font-size: 9.5px; border: 1px solid var(--c); color: var(--c); border-radius: 4px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+.al-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.al-row b { min-width: 150px; } .al-row span:not(.hint) { flex: 1; } .al-row.weak { opacity: .6; }
+.al-row input:not([type=checkbox]) { flex: 1; }

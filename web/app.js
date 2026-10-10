@@ -28,9 +28,10 @@ function connect() {
       case 'export': emit('export', m.job); break;
       case 'wing': S.wing[m.addr] = m.v; emit('wingval', m); break;
       case 'assist': emit('assist', m); break;
+      case 'valign': emit('valign', m); break;
       case 'compare': S.compare = m.on; S.compareMatch = m.match; emit('compare'); break;
       case 'error': toast(m.msg, true); break;
-      case 'toast': toast(m.msg); break;
+      case 'toast': toast(m.msg, false, m.long ? 9000 : 0); break;
     }
   };
 }
@@ -44,7 +45,23 @@ function applyPath(obj, path, v) {
 const getPath = (obj, path) => path.reduce((n, k) => n?.[k], obj);
 
 // Mixer parameter change: update locally, coalesce sends to one per frame per path.
-function setParam(path, v) {
+const LINKED = new Set(['chain', 'sends', 'trim', 'fader', 'mute', 'solo', 'bypass', 'out', 'pan', 'type', 'icon', 'color']);
+const freshIds = c => JSON.parse(JSON.stringify(c)).map(m => ({ ...m, id: 'm' + Math.random().toString(36).slice(2, 9) }));
+function linkedTwin(path, v) {
+  if (path[0] !== 'channels') return null;
+  const c = +path[1], p = S.mixer?.channels?.[c]?.link;
+  if (!Number.isInteger(p) || !S.mixer.channels[p] || !LINKED.has(path[2])) return null;
+  if (path.length === 3 && path[2] === 'pan') return [['channels', p, 'pan'], -v];
+  if (path.length === 3 && path[2] === 'chain') return [['channels', p, 'chain'], freshIds(v)];
+  if (path[2] === 'chain' && path.length > 3) {   // a setting inside the chain: same module on the other side
+    const mine = S.mixer.channels[c].chain?.[+path[3]], theirs = S.mixer.channels[p].chain?.[+path[3]];
+    if (!mine || !theirs || mine.type !== theirs.type) return null;
+  }
+  return [['channels', p, ...path.slice(2)], JSON.parse(JSON.stringify(v ?? null))];
+}
+function setParam(path, v, fromTwin) {
+  if (!fromTwin) { const tw = linkedTwin(path, v); if (tw) setTimeout(() => setParam(tw[0], tw[1], true)); }
+  if (S.info?.locked) { toast('The mix is locked for the service. Unlock it with the padlock at the top.', true); return; }
   applyPath(S.mixer, path, v);
   pending.set(path.join('/'), { path, v });
   if (!flushQueued) {
@@ -92,10 +109,10 @@ async function api(name, body, query = '') {
 }
 const tryApi = async (...a) => { try { return await api(...a); } catch (e) { toast(e.message, true); throw e; } };
 
-function toast(msg, err) {
+function toast(msg, err, ms) {
   const t = $('#toast');
   t.textContent = msg; t.className = 'toast' + (err ? ' error' : ''); t.hidden = false;
-  clearTimeout(t._h); t._h = setTimeout(() => t.hidden = true, err ? 5000 : 2200);
+  clearTimeout(t._h); t._h = setTimeout(() => t.hidden = true, ms || (err ? 5000 : 2200));
 }
 
 function modal(build) {
@@ -124,7 +141,13 @@ $('#btnRec').onclick = () => {
   if (S.tr.recording) return tr('stop');
   const n = S.session.armed.filter(Boolean).length;
   if (!n) return toast('No channels armed — use "Arm all" in the Edit view', true);
-  tr('record');
+  // enough disk for the service? (under 10 minutes the engine refuses on its own)
+  api('rec-check').then(c => {
+    const h = Math.floor(c.seconds / 3600), m = Math.floor(c.seconds / 60) % 60;
+    if (c.seconds < 3 * 3600 && c.seconds >= 600 &&
+        !confirm(`Only ${h ? h + ' h ' : ''}${m} min of recording space left for ${c.armed} channel${c.armed > 1 ? 's' : ''} (${c.gbPerHour} GB per hour).\n\nRecord anyway?`)) return;
+    tr('record');
+  }).catch(() => tr('record'));
 };
 $('#btnHome').onclick = () => tr('locate', { pos: 0 });
 $('#btnBack').onclick = () => tr('locate', { pos: Math.max(0, S.tr.playhead - 5 * sr()) });

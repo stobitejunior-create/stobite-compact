@@ -128,6 +128,7 @@ def default_state(nch):
         "order": list(range(nch)),
         "cables": [{"name": f"Cable {k + 1}", "src": "master" if k == 0 else "none", "gain": 0.0} for k in range(N_CABLES)],
         "monitor": "stereo",
+        "dcas": [],
         "version": 3,
     }
 
@@ -187,7 +188,7 @@ def migrate(state, nch):
         f.setdefault("out", "fx")
         f.setdefault("duck", _duck_default())
     st["fx"] = fx
-    for k in ("tempo", "cables", "monitor", "song"):
+    for k in ("tempo", "cables", "monitor", "song", "dcas"):
         st.setdefault(k, fresh[k])
     order = [i for i in st.get("order", []) if isinstance(i, int) and 0 <= i < nch]
     order += [i for i in range(nch) if i not in order]
@@ -434,6 +435,21 @@ class Mixer:
         pre = np.array([dsp.db_to_lin(c["trim"]) * (-1 if c["phase"] else 1) for c in chs], dtype=np.float32)
         self._base = dict(fader=np.array([float(c["fader"]) for c in chs]), pan=np.array([float(c["pan"]) for c in chs]),
                           mute=np.array([bool(c["mute"]) for c in chs]), solo=np.array([bool(c["solo"]) for c in chs]))
+        dca_off, dca_mute = np.zeros(len(chs)), np.zeros(len(chs), bool)
+        for g in st.get("dcas") or []:
+            for c in g.get("members") or []:
+                if 0 <= int(c) < len(chs):
+                    dca_off[int(c)] += float(g.get("fader", 0.0))
+                    dca_mute[int(c)] |= bool(g.get("mute"))
+        self._dca = (dca_off, dca_mute) if (dca_off.any() or dca_mute.any()) else None
+        # delay per channel: automatic compensation (every channel waits for the slowest chain, so
+        # e.g. a denoiser on one mic doesn't smear it against the others) + any alignment delay set by hand
+        lat = np.array([0 if ch.get("bypass") else sum(effects.LATENCY.get(m.get("type"), 0) for m in ch.get("chain") or [] if m.get("on", True))
+                        for ch in chs])
+        user = np.array([int(round(max(0.0, float(ch.get("delay", 0) or 0)) * self.fs / 1000)) for ch in chs])
+        d = (lat.max() - lat) * (lat.max() > 0) + user
+        self._chdelay = d.astype(np.int64) if d.any() else None
+        self.pdc = int(lat.max())
         dest = np.array([di.get(c.get("out", "master"), -1) for c in chs])
         send_lin = np.array([[dsp.db_to_lin(s) for s in c["sends"][:4]] for c in chs])
         bus_send = {b["id"]: np.array([dsp.db_to_lin(s) for s in b.get("sends", [])[:4]]) for b in buses}
@@ -685,6 +701,19 @@ class Mixer:
     _e_after = 0.0
     _e_before = 0.0
 
+    _dl = None
+
+    def _delay(self, x, d):
+        """Delay each channel (column) of x by d[c] samples, keeping history between blocks."""
+        frames, n = x.shape
+        D = int(d.max())
+        if self._dl is None or self._dl.shape != (D, n):
+            self._dl = np.zeros((D, n), np.float32)
+        buf = np.concatenate([self._dl, x])
+        idx = np.arange(frames)[:, None] + (D - d)[None, :]
+        x[:] = np.take_along_axis(buf, idx, axis=0)
+        self._dl = buf[-D:].copy() if D else self._dl
+
     def _before(self, Yr, c, master_g, frames):
         """The mix with no processing: channels summed through the same faders, pans and buses
         (bus faders only), no EQ / dynamics / FX / master chain. Level-matched to the processed
@@ -730,6 +759,9 @@ class Mixer:
             if auto.get("master") is not None and not self.state["master"]["mute"]:
                 master_g = dsp.db_to_lin(auto["master"])
 
+        if self._dca is not None:      # DCA groups move / mute their members on top of their own faders
+            fader = fader + self._dca[0]
+            mute = mute | self._dca[1]
         pk_in = np.abs(x).max(axis=0)
         np.maximum(self.m_in, pk_in, out=self.m_in)
         # channels silent for half a second skip their per-channel filters (their audio is already ~zero)
@@ -744,6 +776,8 @@ class Mixer:
         self.chains.process(x, dormant)   # each channel's own chain, in its own order
         if keep is not None:
             x[:, byp] = keep              # bypassed channels pass through untouched
+        if self._chdelay is not None:
+            self._delay(x, self._chdelay)
         if direct_out is not None:
             direct_out[:] = x
         if self.focus is not None and 0 <= self.focus < self.nch:

@@ -35,6 +35,7 @@ TYPES = {
     "mbc": ("Multiband compressor", "MB", False, True),
     "width": ("Width & balance", "WIDE", False, True),
     "limiter": ("Limiter", "LIM", False, True),
+    "proximity": ("Proximity", "PROX", True, True),
     "denoise": ("Denoiser", "DNS", True, True),
     "reverb": ("Reverb", "VERB", True, True),
     "delay": ("Delay / echo", "DLY", True, True),
@@ -49,7 +50,7 @@ TYPES = {
     "gain": ("Gain / utility", "GAIN", True, True),
     "plugin": ("Plug-in", "PLUG", True, True),
 }
-EFFECTS = ("denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+EFFECTS = ("proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 
 def new_id():
@@ -84,6 +85,7 @@ DEFAULTS = {
     "width": lambda: {"width": 100.0, "balance": 0.0},
     "limiter": lambda: {"ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
     "plugin": lambda: {"path": "", "name": "Plug-in", "params": {}},
+    "proximity": lambda: {"mode": "tame", "amount": 6, "freq": 200},
     "denoise": lambda: {"reduction": 12, "sensitivity": 50, "mix": 100},
     "reverb": lambda: {"size": 60, "damping": 50, "width": 100, "mix": 25},
     "delay": lambda: {"sync": True, "note": "1/4", "time": 375, "feedback": 30, "lowcut": 200, "highcut": 6000, "mix": 20},
@@ -167,6 +169,21 @@ def eq_strip(m):
 
 # ---------------------------------------------------------------- channel banks (vectorised per stage)
 
+def link_pairs(tgt, slots, partner):
+    """Stereo-linked channels: both sides take the larger gain reduction, so the image stays put."""
+    if not partner:
+        return tgt
+    pos = {int(sl): j for j, sl in enumerate(slots)}
+    out = tgt
+    for sl, j in pos.items():
+        jp = pos.get(partner.get(sl, -1))
+        if jp is not None:
+            if out is tgt:
+                out = tgt.copy()
+            out[:, j] = np.maximum(tgt[:, j], tgt[:, jp])
+    return out
+
+
 class _Bank:
     """Per-module state stored in slots, kept across recompiles by module id."""
     STATE = ()
@@ -214,6 +231,7 @@ class CompBank(_Bank):
         over, k, slope = lvl - self.thr[s], self.knee[s], 1 - 1 / self.ratio[s]
         tgt = np.where(over <= -k / 2, 0.0, np.where(over >= k / 2, over * slope, slope * (over + k / 2) ** 2 / (2 * k)))
         tgt = np.minimum(tgt, self.rng[s])
+        tgt = link_pairs(tgt, s, getattr(self, "partner", None))   # a stereo pair ducks together
         red, self.gr[s] = Dynamics._smooth(tgt, self.gr[s], self.att[s], self.rel[s])
         lin = 10 ** (-red / 20) * self.make[s]
         mix = self.mix[s].astype(np.float32)
@@ -242,6 +260,7 @@ class GateBank(_Bank):
         nsub = max(x.shape[0] // SUB, 1)
         lvl = _db(np.abs(x[: nsub * SUB]).reshape(nsub, SUB, -1).max(axis=1))
         tgt = np.where(lvl < self.thr[s], self.rng[s], 0.0)
+        tgt = link_pairs(tgt, s, getattr(self, 'partner', None))
         red, self.gr[s] = Dynamics._smooth(tgt, self.gr[s], self.rel[s], self.att[s])  # opening uses attack
         self.prev[s] = Dynamics._apply(x, 10 ** (-red / 20), self.prev[s])
         return x
@@ -371,6 +390,21 @@ class ChannelChains:
                     objs[m["id"]] = self._object(m)
         for t, mods in per_type.items():
             self.banks[t].assign(mods)
+        # stereo pairs: the k-th compressor / gate of each side work as one
+        for t in ("comp", "gate"):
+            self.banks[t].partner = {}
+        for c, ch in enumerate(channels):
+            p = ch.get("link")
+            if not isinstance(p, int) or not 0 <= p < len(channels) or p <= c:
+                continue
+            a, b = ch.get("chain") or [], channels[p].get("chain") or []
+            for ma, mb in zip(a, b):
+                t = ma.get("type")
+                if t in ("comp", "gate") and mb.get("type") == t:
+                    sa, sb = self.banks[t].slot.get(ma["id"]), self.banks[t].slot.get(mb["id"])
+                    if sa is not None and sb is not None:
+                        self.banks[t].partner[sa] = sb
+                        self.banks[t].partner[sb] = sa
         self.objs = objs
         self.where = where
         # stage k: modules sitting k-th in their channel, grouped by type

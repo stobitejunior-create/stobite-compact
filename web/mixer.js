@@ -76,7 +76,7 @@
     const n = S.mixer.channels.length, b = $('#mixBank'); b.innerHTML = '';
     const opts = [['inputs', 'Inputs']];
     for (let i = 0; i < n; i += 16) opts.push([`${i}`, `${i + 1}–${Math.min(n, i + 16)}`]);
-    opts.push(['buses', 'Buses'], ['fx', 'FX']);
+    opts.push(['buses', 'Buses'], ['fx', 'FX'], ['dca', 'DCA']);
     for (const [v, l] of opts) b.append(h('button', { class: layer === v ? 'on' : '', onclick: () => { layer = v; buildMixer(); } }, l));
   }
   function layerChannels() {
@@ -98,6 +98,10 @@
     const showSends = $('#showSends').checked;
     if (layer === 'buses') S.mixer.buses.forEach((b, i) => box.append(busStrip(b, i)));
     else if (layer === 'fx') S.mixer.fx.forEach((f, i) => box.append(fxStrip(f, i)));
+    else if (layer === 'dca') {
+      (S.mixer.dcas || []).forEach((g, i) => box.append(dcaStrip(g, i)));
+      box.append(h('button', { class: 'strip addbus', onclick: () => newDca() }, icon('plus', 22), 'New DCA'));
+    }
     else layerChannels().forEach(c => box.append(channelStrip(c, showSends)));
     if (layer === 'buses') box.append(h('button', { class: 'strip addbus', onclick: async () => { const n = prompt('Name for the new bus', 'New Bus'); if (n) await tryApi('bus-add', { name: n }); } }, icon('plus', 22), 'Add bus'));
     const mb = $('#mstrips'); mb.innerHTML = '';
@@ -161,7 +165,9 @@
     const name = h('div', { class: 'sname', style: `background:${ch.color}`, onclick: () => openEditor(c), title: `Open ${ch.name}` }, ch.name);
     const io = h('div', { class: 'io' },
       h('span', { class: 'inlbl', title: 'Input (change it in the channel editor)' }, inputLabel(ch.input)),
-      h('span', { class: 'outlbl', style: `--c:${destColor(ch.out)}`, title: 'Goes to this bus' }, '→ ' + destName(ch.out)));
+      h('span', { class: 'outlbl', style: `--c:${destColor(ch.out)}`, title: 'Goes to this bus' }, '→ ' + destName(ch.out)),
+      Number.isInteger(ch.link) ? h('span', { class: 'pairchip', title: `Stereo pair with ${c < ch.link ? 'the next' : 'the previous'} channel: settings move together` }, c < ch.link ? 'L' : 'R') : null,
+      ...(S.mixer.dcas || []).filter(g => (g.members || []).includes(c)).map(g => h('span', { class: 'dcachip', style: `--c:${g.color}`, title: 'In DCA ' + g.name }, g.name)));
     const thumb = h('canvas');
     const badges = chainBadges(['channels', c], ch.chain);
     const gr = h('i');
@@ -198,6 +204,76 @@
     const order = S.mixer.order.filter(x => x !== from);
     order.splice(order.indexOf(to), 0, from);
     setParam(['order'], order);
+  };
+
+  // ---- DCA groups: one fader / mute for a set of channels (their own faders stay where they are)
+  const DCA_COLORS = ['#e5484d', '#f76b15', '#46a758', '#0090ff', '#6e56cf', '#d6409f', '#12a594', '#ffc53d'];
+  function newDca() {
+    const n = (S.mixer.dcas || []).length;
+    const name = prompt('Name for the DCA (e.g. Vocals, Band, Drums)', ['Vocals', 'Band', 'Drums', 'Keys'][n] || 'DCA ' + (n + 1));
+    if (!name) return;
+    setParam(['dcas'], [...(S.mixer.dcas || []), { id: 'dca' + Date.now().toString(36), name, color: DCA_COLORS[n % DCA_COLORS.length], fader: 0, mute: false, members: [] }]);
+    buildMixer(); editDca(n);
+  }
+  function editDca(i) {
+    const g = S.mixer.dcas[i];
+    modal((card, close) => {
+      const name = h('input', { value: g.name, style: 'flex:1' });
+      const picks = new Set(g.members || []);
+      const list = h('div', { class: 'dca-list' }, ...S.mixer.order.filter(c => S.mixer.channels[c].type || !/^Ch \d+$/.test(S.mixer.channels[c].name) || picks.has(c)).map(c => {
+        const ch = S.mixer.channels[c];
+        const cb = h('input', { type: 'checkbox', checked: picks.has(c), onchange: e => e.target.checked ? picks.add(c) : picks.delete(c) });
+        return h('label', { class: 'chk' }, cb, h('span', { class: 'dot-c', style: `background:${ch.color}` }), `${c + 1}: ${ch.name}`);
+      }));
+      card.append(h('h3', {}, 'DCA group'), h('div', { class: 'frow' }, name),
+        h('p', { class: 'hint' }, 'Moving the DCA fader raises or lowers all these channels together; muting it mutes them all. Their own faders don’t move.'),
+        list,
+        h('div', { class: 'acts' },
+          h('button', { class: 'btn danger', onclick: () => { setParam(['dcas'], S.mixer.dcas.filter((_, j) => j !== i)); close(); buildMixer(); } }, 'Delete DCA'),
+          h('span', { class: 'grow' }),
+          h('button', { class: 'btn', onclick: close }, 'Cancel'),
+          h('button', { class: 'btn accent', onclick: () => { setParam(['dcas', i, 'name'], name.value || g.name); setParam(['dcas', i, 'members'], [...picks].sort((a, b) => a - b)); close(); buildMixer(); } }, 'Save')));
+    });
+  }
+  function dcaStrip(g, i) {
+    const P = (...p) => ['dcas', i, ...p];
+    const el = h('div', { class: 'strip dca' });
+    const db = h('div', { class: 'db' }, fmt.db(g.fader));
+    const names = (g.members || []).map(c => S.mixer.channels[c]?.name).filter(Boolean);
+    el.append(h('div', { class: 'shead' }, h('span', { class: 'sicon' }, icon('mixer', 20))),
+      h('div', { class: 'sname', style: `background:${g.color}`, onclick: () => editDca(i), title: 'Choose channels, rename or delete' }, g.name),
+      h('div', { class: 'dca-members', title: names.join(', ') }, names.length ? `${names.length} channel${names.length > 1 ? 's' : ''}` : 'No channels yet'),
+      h('div', { class: 'dca-names' }, ...names.slice(0, 8).map(n => h('span', {}, n)), names.length > 8 ? h('span', {}, `+${names.length - 8}`) : null),
+      h('div', { class: 'row' }, muteBtn(P('mute'))),
+      faderBlock(P('fader'), [], db), db);
+    return el;
+  }
+
+  // ---- stereo pairs (keys L/R, tracks L/R...): two channels that move as one
+  function pairSelect(c) {
+    const ch = S.mixer.channels[c], o = S.mixer.order, i = o.indexOf(c);
+    const nb = [o[i - 1], o[i + 1]].filter(x => x != null);
+    const s = h('select', { onchange: e => setPair(c, e.target.value === '' ? null : +e.target.value) },
+      h('option', { value: '' }, 'Mono (not paired)'),
+      ...nb.map(p => h('option', { value: p, selected: ch.link === p }, `With ${p + 1}: ${S.mixer.channels[p].name}`)));
+    return s;
+  }
+  window.setPair = (c, p) => {
+    const chs = S.mixer.channels, old = chs[c].link;
+    if (Number.isInteger(old) && chs[old]) setParam(['channels', old, 'link'], null, true);
+    setParam(['channels', c, 'link'], p, true);
+    if (p != null) {
+      const prevLink = chs[p].link;
+      if (Number.isInteger(prevLink) && prevLink !== c && chs[prevLink]) setParam(['channels', prevLink, 'link'], null, true);
+      setParam(['channels', p, 'link'], c, true);
+      // the second channel takes the first one's sound; left / right panned apart
+      const [L, R] = S.mixer.order.indexOf(c) < S.mixer.order.indexOf(p) ? [c, p] : [p, c];
+      for (const k of ['sends', 'trim', 'fader', 'mute', 'bypass', 'out', 'type', 'icon', 'color']) setParam(['channels', p, k], JSON.parse(JSON.stringify(chs[c][k] ?? null)), true);
+      setParam(['channels', p, 'chain'], JSON.parse(JSON.stringify(chs[c].chain || [])).map(m => ({ ...m, id: newModuleId() })), true);
+      setParam(['channels', L, 'pan'], -1, true); setParam(['channels', R, 'pan'], 1, true);
+      toast('Stereo pair: changes on either side now apply to both');
+    } else toast('Unpaired');
+    setTimeout(() => { buildMixer(); edTarget != null && openEditor(edTarget); }, 150);
   };
 
   function busStrip(b, i) {
@@ -647,7 +723,9 @@
           h('div', { class: 'f2' }, h('span', {}, 'Input'), S_(P('input'), inputOptions(), { onchange: () => setTimeout(() => openEditor(t), 1300) })),
           devStatus(st.input),
           h('div', { class: 'f2' }, h('span', {}, 'Output'), S_(P('out'), destOptions(), { onchange: () => openEditor(t) })),
-          h('div', { class: 'knobs' }, K(P('trim'), { label: 'Gain / trim', min: -24, max: 24, def: 0, format: fmt.db, bipolar: true, size: 44, big: true }), T(P('phase'), 'Ø Phase')),
+          h('div', { class: 'knobs' }, K(P('trim'), { label: 'Gain / trim', min: -24, max: 24, def: 0, format: fmt.db, bipolar: true, size: 44, big: true }),
+            K(P('delay'), { label: 'Align delay', min: 0, max: 20, def: 0, format: v => v < 0.01 ? '0 ms' : v.toFixed(2) + ' ms', size: 38 }), T(P('phase'), 'Ø Polarity')),
+          h('div', { class: 'f2' }, h('span', {}, 'Stereo pair'), pairSelect(t)),
           presetSel,
           h('div', { class: 'frow' },
             h('button', { class: 'btn', onclick: () => saveChannelSettings(t) }, icon('export', 14), 'Save this sound…'),
@@ -752,7 +830,7 @@
 
   // the effect picker, grouped like Logic's plug-in menu
   const EFFECT_GROUPS = [
-    ['EQ & filter', ['eq', 'dyneq', 'autofilter']],
+    ['EQ & filter', ['eq', 'dyneq', 'proximity', 'autofilter']],
     ['Dynamics', ['comp', 'gate', 'deess', 'trans', 'mbc', 'limiter']],
     ['Reverb & delay', ['reverb', 'delay']],
     ['Modulation', ['chorus', 'flanger', 'phaser', 'tremolo']],
@@ -934,6 +1012,13 @@
         K(M('gain'), { label: 'Input gain', min: -12, max: 12, def: 0, format: fmt.db, bipolar: true, size: 30 })),
         h('div', { class: 'frow' }, T(M('truepeak'), 'True peak')), bar('lim'),
         h('p', { class: 'hint' }, 'A safety net that should only catch the loudest peaks (1–3 dB).'));
+    } else if (m.type === 'proximity') {
+      kids.push(h('div', { class: 'frow' }, S_(M('mode'), [['tame', 'Tame boom (automatic)'], ['add', 'Add closeness (warmth)']], { onchange: () => openEditor(t) })),
+        h('div', { class: 'knobs' },
+          K(M('amount'), { label: m.mode === 'add' ? 'Warmth' : 'Max cut', min: 0, max: 18, def: 6, format: v => (m.mode === 'add' ? '+' : '−') + v.toFixed(1) + ' dB', size: 46, big: true }),
+          K(M('freq'), { label: 'Up to', min: 80, max: 400, log: true, def: 200, format: fmt.hz, size: 40 })),
+        h('p', { class: 'hint' }, m.mode === 'add' ? 'The warm low end of a voice right on the mic. Great on a thin or distant voice.' :
+          'When a singer leans into the mic the bass builds up (proximity effect). This learns their normal sound and turns the lows down only while it gets boomy.'));
     } else if (m.type === 'denoise') {
       kids.push(h('div', { class: 'knobs' },
         K(M('reduction'), { label: 'Reduction', min: 0, max: 40, def: 12, format: v => '−' + Math.round(v) + ' dB', size: 48, big: true }),

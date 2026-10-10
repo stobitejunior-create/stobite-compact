@@ -671,9 +671,21 @@
   };
   // the right-click menus
   const k = id => CMD[id]?.keys || '';
+  // takes: clips recorded over the same stretch of one track; you hear the one that isn't muted
+  function takesOf(c) {
+    return clips().filter(x => x.track === c.track && x.start < c.start + c.length && x.start + x.length > c.start)
+      .sort((a, b) => a.start - b.start || (a.name > b.name ? 1 : -1));
+  }
+  function useTake(t, all) {
+    edit('set', { ids: all.filter(x => x.id !== t.id).map(x => x.id), mute: true });
+    edit('set', { ids: [t.id], mute: false });
+    toast('Using ' + t.name);
+  }
   function clipMenu(c) {
     const n = T.sel.size, many = n > 1 ? ` ${n} clips` : '';
-    return [
+    const takes = takesOf(c);
+    const takeMenu = takes.length > 1 ? [{ label: `Takes (${takes.length})`, items: takes.map(x => ({ label: `${x.name} · ${tc(x.start).slice(0, 8)}`, check: !x.mute, run: () => useTake(x, takes) })) }, '-'] : [];
+    return [...takeMenu,
       { label: 'Cut', keys: k('cut'), run: TL.cut }, { label: 'Copy', keys: k('copy'), run: TL.copy },
       { label: 'Paste', keys: k('paste'), run: TL.paste, disabled: !T.clipboard }, { label: 'Duplicate', keys: k('duplicate'), run: TL.duplicate },
       '-',
@@ -852,7 +864,8 @@
     modal(async (card, close) => {
       const pref = loadPrefs();
       const sel = (opts, val) => h('select', {}, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val) }, l)));
-      const kind = sel([['mix', 'Stereo mix (with all mixer effects)'], ['tracks', 'Separate tracks: open in Logic / Pro Tools / Cubase'],
+      const kind = sel([['mix', 'Stereo mix (with all mixer effects)'], ['sections', 'Each section as its own file (songs, sermon…)'],
+        ['podcast', 'Sermon podcast (MP3 with title and speaker)'], ['tracks', 'Separate tracks: open in Logic / Pro Tools / Cubase'],
         ['project', 'Project file (.stobite): every recording + the whole mix, to open on another computer']], pref.kind || 'mix');
       const f = h('select');
       const depth = h('select');
@@ -868,13 +881,34 @@
       const prog = h('div', { class: 'progress' }, h('i'));
       const out = h('div');
       const go = h('button', { class: 'btn accent' }, 'Export');
+      // podcast details
+      const pTitle = h('input', { placeholder: 'Sermon title', value: pref.podTitle || '' });
+      const pSpeaker = h('input', { placeholder: 'Speaker', value: pref.podSpeaker || '' });
+      const pChurch = h('input', { placeholder: 'Church / podcast name', value: pref.podChurch || '' });
+      const pSpeech = h('input', { type: 'checkbox', checked: pref.podSpeech !== false });
+      const pRate = sel([[64, '64 kbps · smallest'], [96, '96 kbps · clear speech'], [128, '128 kbps · with music']], pref.podRate || 96);
+      const pRange = h('select');
+      const podBox = h('div', { class: 'card' }, row('Title', pTitle), row('Speaker', pSpeaker), row('Podcast', pChurch), row('Part', pRange), row('Quality', pRate),
+        h('label', { class: 'chk' }, pSpeech, 'Only the speaking (the Preaching bus / preacher mics), not the band'),
+        h('p', { class: 'hint' }, 'Mono MP3 at podcast loudness (−16 LUFS), with the title, speaker and date that phones and podcast apps show.'));
+      const soloNote = h('p', { class: 'warn-line' });
+      const soloed = (S.mixer?.channels || []).filter(c => c.solo).map(c => c.name);
+      if (soloed.length) soloNote.append(`${soloed.join(', ')} ${soloed.length > 1 ? 'are' : 'is'} soloed, so the export would only contain ${soloed.length > 1 ? 'them' : 'it'}. `,
+        h('button', { class: 'btn', onclick: () => { clearSolos(); soloNote.remove(); } }, 'Clear solos'));
       card.append(h('h3', {}, 'Export'),
         h('p', { class: 'hint' }, start != null ? `Range ${tc(start)} → ${tc(end)}` : 'Whole session (all clips, with edits applied).'),
-        h('div', { class: 'card' }, row('What', kind), fRow, depthRow, rateRow, chRow, loudRow),
+        h('div', { class: 'card' }, row('What', kind), fRow, depthRow, rateRow, chRow, loudRow), podBox, soloNote,
         sizeBox, prog, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
 
-      let est = null;
+      let est = null, secs = [];
       try { est = await api('export-estimate', undefined, `?start=${start ?? ''}&end=${end ?? ''}`); } catch (e) { /* preview only */ }
+      try { secs = await api('sections'); } catch (e) { /* none */ }
+      // podcast part: the selected range, a section (the sermon first), or everything
+      if (start != null) pRange.append(h('option', { value: `${start}:${end}` }, `Selected range ${tc(start)} → ${tc(end)}`));
+      [...secs].sort((a, b) => (b.name.toLowerCase().includes('sermon') ? 1 : 0) - (a.name.toLowerCase().includes('sermon') ? 1 : 0))
+        .forEach(x => pRange.append(h('option', { value: `${x.start}:${x.end}` }, `${x.name} (${fmtDur((x.end - x.start) / (est?.sr || 48000))})`)));
+      pRange.append(h('option', { value: '' }, 'The whole service'));
+      if (!pTitle.value) pTitle.value = secs.find(x => /sermon/i.test(x.name))?.name || S.session?.name || '';
 
       const fill = (el, opts, val) => { el.innerHTML = ''; opts.forEach(([v, l]) => el.append(h('option', { value: v, selected: String(v) === String(val) }, l))); };
       let shown = 0, anim = 0;
@@ -900,28 +934,40 @@
           fill(f, keys.map(x => [x, `${EXPORT_FORMATS[x].label}: ${EXPORT_FORMATS[x].note}`]), cur);
         }
         const F = EXPORT_FORMATS[f.value];
-        const isMix = k === 'mix', isProj = k === 'project';
+        const isPod = k === 'podcast', isSec = k === 'sections';
+        const isMix = k === 'mix' || isSec, isProj = k === 'project';
+        podBox.style.display = isPod ? '' : 'none';
         if (F.depths) { const cur = F.depths.includes(depth.value) ? depth.value : F.depths.includes(pref.depth) ? pref.depth : '24'; fill(depth, F.depths.map(d => [d, DEPTH_LABEL[d]]), cur); }
         if (F.rates) { const cur = F.rates.includes(+rate.value) ? rate.value : F.rates.includes(+pref.kbps) ? pref.kbps : F.def; fill(rate, F.rates.map(r => [r, `${r} kbps · ${RATE_HINT[r]}`]), cur); }
-        fRow.style.display = isProj ? 'none' : '';
-        depthRow.style.display = !isProj && F.depths ? '' : 'none';
-        rateRow.style.display = !isProj && F.rates ? '' : 'none';
+        fRow.style.display = isProj || isPod ? 'none' : '';
+        depthRow.style.display = !isProj && !isPod && F.depths ? '' : 'none';
+        rateRow.style.display = !isProj && !isPod && F.rates ? '' : 'none';
         chRow.style.display = isMix ? '' : 'none';
         loudRow.style.display = isMix ? '' : 'none';
-        savePrefs({ kind: k, fmt: f.value, depth: depth.value, kbps: rate.value, channels: chans.value });
+        savePrefs({ kind: k, fmt: f.value, depth: depth.value, kbps: rate.value, channels: chans.value,
+          podTitle: pTitle.value, podSpeaker: pSpeaker.value, podChurch: pChurch.value, podSpeech: pSpeech.checked, podRate: pRate.value });
 
         if (!est) { sizeNum.textContent = '—'; sizeSub.textContent = 'Size preview unavailable'; return; }
         const sr = est.sr, srTxt = (sr / 1000) + ' kHz';
         sizeNote.className = 'xsize-note'; sizeNote.textContent = '';
         let lo = 0, hi = 0, sub = '', note = '';
-        if (isProj) {
+        if (isPod) {
+          const [a, b] = pRange.value ? pRange.value.split(':').map(Number) : [0, est.seconds * sr];
+          const sec = (b - a) / sr;
+          lo = +pRate.value * 1000 / 8 * sec;
+          sub = `${fmtDur(sec)} · mono MP3 ${pRate.value} kbps · −16 LUFS`;
+          note = 'Constant bitrate: the size is exact to within a few KB.';
+        } else if (isSec && !secs.length) {
+          lo = 0; sub = 'No sections yet';
+          note = 'Add a marker at the start of each song and the sermon, or use File → Find songs & sermon.';
+        } else if (isProj) {
           lo = est.projectBytes;
           sub = 'Every recording, as it is now, plus the mix';
           note = 'Exact: it is a copy of the project folder.';
         } else {
-          const sec = est.seconds + (isMix ? est.tail : 0);
+          const sec = isSec ? secs.reduce((t, x) => t + (x.end - x.start) / sr + est.tail, 0) : est.seconds + (isMix ? est.tail : 0);
           const nch = isMix ? +chans.value : 1, files = isMix ? 1 : est.tracks;
-          const what = isMix ? (nch === 1 ? 'mono' : 'stereo') : `${files} mono track${files === 1 ? '' : 's'}`;
+          const what = isSec ? `${secs.length} file${secs.length === 1 ? '' : 's'} (${secs.map(x => x.name).slice(0, 4).join(', ')}${secs.length > 4 ? '…' : ''})` : isMix ? (nch === 1 ? 'mono' : 'stereo') : `${files} mono track${files === 1 ? '' : 's'}`;
           if (F.lossy) {
             lo = +rate.value * 1000 / 8 * sec * files;
             sub = `${fmtDur(sec)} · ${what} · ${F.label} ${rate.value} kbps`;
@@ -944,13 +990,19 @@
         showSize(lo, hi);
       };
       kind.onchange = () => update(true);
-      f.onchange = depth.onchange = rate.onchange = chans.onchange = () => update(false);
+      f.onchange = depth.onchange = rate.onchange = chans.onchange = pRange.onchange = pRate.onchange = () => update(false);
+      pTitle.oninput = pSpeaker.oninput = pChurch.oninput = pSpeech.onchange = () => update(false);
       update(true);
 
       go.onclick = async () => {
         go.disabled = true;
         try {
           if (kind.value === 'project') await api('project-export', {});
+          else if (kind.value === 'podcast') {
+            const [a, b] = pRange.value ? pRange.value.split(':').map(Number) : [null, null];
+            await api('export', { kind: 'podcast', start: a, end: b, target: -16, kbps: +pRate.value,
+              extra: { speechOnly: pSpeech.checked, mono: true, tags: { title: pTitle.value, artist: pSpeaker.value, album: pChurch.value, year: String(new Date().getFullYear()) } } });
+          }
           else await api('export', { kind: kind.value, fmt: f.value, depth: depth.value, kbps: +rate.value || null, channels: +chans.value, start, end,
             target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value });
         }

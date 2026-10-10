@@ -1,6 +1,7 @@
 """Sessions on disk, the clip timeline, non-destructive edits and recording."""
 import copy
 import json
+import shutil
 import os
 import queue
 import re
@@ -75,6 +76,75 @@ def delete_session(name):
         return "trash"
     shutil.rmtree(path)
     return "deleted"
+
+
+SFC_SET_UPDATE_HEADER_AUTO = 0x1061   # libsndfile: rewrite the WAV header after every write
+
+
+def crash_safe(f):
+    """Keep a WAV's header current while it's being written, so a crash leaves a readable file."""
+    try:
+        from soundfile import _snd, _ffi
+        _snd.sf_command(f._file, SFC_SET_UPDATE_HEADER_AUTO, _ffi.NULL, 1)
+    except Exception:
+        pass
+
+
+def repair_wav(path, sr):
+    """A WAV whose header says it's empty but holds audio (cut off mid-recording): rebuild it."""
+    try:
+        if sf.info(path).frames > 0:
+            return True
+    except Exception:
+        pass
+    size = os.path.getsize(path)
+    if size <= 44 + 3:
+        return False
+    with open(path, "rb") as fh:
+        head = fh.read(4096)
+        k = head.find(b"data")
+        off = k + 8 if k >= 0 else 44
+        fh.seek(off)
+        raw = fh.read()
+    n = len(raw) // 3
+    b = np.frombuffer(raw[: n * 3], np.uint8).reshape(n, 3).astype(np.int32)
+    v = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
+    v = np.where(v >= 1 << 23, v - (1 << 24), v).astype(np.float32) / (1 << 23)
+    tmp = path + ".fixed.wav"
+    sf.write(tmp, v, sr, subtype="PCM_24")
+    os.replace(tmp, path)
+    return True
+
+
+def recover_interrupted(session):
+    """After a crash: turn the files of a recording that never finished into clips. Returns how many."""
+    note = os.path.join(session.dir, "recording.json")
+    if not os.path.exists(note):
+        return 0
+    try:
+        with open(note) as fh:
+            info = json.load(fh)
+    except Exception:
+        os.remove(note)
+        return 0
+    have = {c["file"] for c in session.clips}
+    clips = []
+    for c, rel in info.get("files", {}).items():
+        p = os.path.join(session.dir, rel)
+        if rel in have or not os.path.exists(p) or not repair_wav(p, session.sr):
+            continue
+        frames = sf.info(p).frames
+        if frames <= 0:
+            continue
+        d, _ = sf.read(p, dtype="float32")
+        session.write_peaks(rel, d if d.ndim == 1 else d[:, 0])
+        clips.append(Session.new_clip(int(c), rel, int(info.get("start", 0)), frames, name=info.get("name", "Recovered") + " (recovered)"))
+    with session.lock:
+        session.clips.extend(clips)
+        session.take = max(session.take, int(info.get("take", 0)))
+        session._bump()
+    os.remove(note)
+    return len(clips)
 
 
 def scratch_dir():
@@ -521,6 +591,16 @@ class Recorder:
         self.rels = {c: f"audio/T{session.take:03d}_{stamp}_Ch{c + 1:02d}.wav" for c in self.chans}
         self.files = {c: sf.SoundFile(os.path.join(session.dir, r), "w", session.sr, 1, "PCM_24")
                       for c, r in self.rels.items()}
+        for f in self.files.values():
+            crash_safe(f)
+        # a note saying a recording is in progress: if the app or computer dies, the next start
+        # finds it and turns the files into clips (see recover_interrupted)
+        with open(os.path.join(session.dir, "recording.json"), "w") as fh:
+            json.dump({"take": session.take, "start": int(start_pos), "files": {str(c): r for c, r in self.rels.items()},
+                       "name": f"Take {session.take}", "time": time.time()}, fh)
+        self.last_sync = time.time()
+        self.disk_low = False
+        self.disk_warn = False
         self.peak_acc = {c: [] for c in self.chans}
         # waveform outline while recording: one growing array per channel (doubles when full)
         self.flat = {c: np.zeros(4096, np.float16) for c in self.chans}
@@ -554,6 +634,15 @@ class Recorder:
                     acc.append(data[:, j])
                 self.frames += len(data)
                 self._roll_peaks()
+                now = time.time()
+                if now - self.last_sync > 5:          # push to the disk every few seconds
+                    self.last_sync = now
+                    for f in self.files.values():
+                        try:
+                            f.flush()
+                        except Exception:
+                            pass
+                    self._check_disk()
         if pending:
             data = np.concatenate(pending)
             for j, c in enumerate(self.chans):
@@ -584,6 +673,17 @@ class Recorder:
         n = self.n
         return {c: np.minimum(self.flat[c][k:n].astype(np.float32) * 255, 255).astype(np.uint8).tolist() for c in self.chans}, n
 
+    def _check_disk(self):
+        """Running out of disk: warn with ~15 minutes left, stop cleanly with ~1 minute left."""
+        try:
+            free = shutil.disk_usage(self.session.dir).free
+        except Exception:
+            return
+        per_sec = self.session.sr * 3 * max(len(self.chans), 1)
+        left = free / per_sec
+        self.disk_warn = left < 15 * 60
+        self.disk_low = left < 60
+
     def stop(self):
         """Finish writing; returns the new clips."""
         if not self.active:
@@ -605,4 +705,8 @@ class Recorder:
             s._checkpoint()
             s.clips.extend(clips)
             s._bump()
+        try:
+            os.remove(os.path.join(s.dir, "recording.json"))   # finished cleanly
+        except OSError:
+            pass
         return clips
