@@ -105,6 +105,101 @@ def mac_window_behaviour(window, holder):
     except Exception as ex:
         print("Dock reopen unavailable:", ex, flush=True)
 
+# ---- menu bar: each item runs the same command as its keyboard shortcut (web/commands.js).
+# (title, command or "#selector" for a built-in macOS action, key, modifiers). None = separator.
+MENUS = [
+    ("File", [("New Project…", "newProject", "n", "cmd"), ("Open Project…", "openProject", "o", "cmd"), None,
+              ("Import Audio…", "importAudio", "i", "cmd+shift"), ("Save", "save", "s", "cmd"), ("Export…", "exportMix", "e", "cmd"), None,
+              ("Mix Settings & Templates…", "mixSettings", "m", "cmd+shift"), None, ("Close Window", "#performClose:", "w", "cmd")]),
+    ("Edit", [("Undo", "undo", "z", "cmd"), ("Redo", "redo", "z", "cmd+shift"), None,
+              ("Cut", "#cut:", "x", "cmd"), ("Copy", "#copy:", "c", "cmd"), ("Paste", "#paste:", "v", "cmd"),
+              ("Duplicate", "duplicate", "d", "cmd"), ("Delete", "delete", "", ""), ("Select All", "#selectAll:", "a", "cmd"), None,
+              ("Split at Playhead", "split", "t", "cmd"), ("Join Clips", "join", "j", "cmd"), ("Normalize", "normalize", "", ""),
+              ("Reverse", "reverse", "", ""), ("Mute / Unmute Clip", "muteClip", "m", "ctrl"), ("Rename Clip…", "renameClip", "", ""), None,
+              ("Add Marker", "marker", "", "")]),
+    ("Transport", [("Play / Pause    Space", "play", "", ""), ("Record    R", "record", "", ""), ("Stop", "stop", "", ""),
+                   ("Go to Start    ↩", "toStart", "", ""), None, ("Cycle    C", "cycle", "", ""), ("Metronome    K", "metronome", "", ""),
+                   ("Count-in    ⇧K", "countIn", "", ""), None, ("Tempo & Time Signature…", "tempo", "", "")]),
+    ("View", [("Edit", "viewEdit", "1", "cmd"), ("Mixer", "viewMixer", "2", "cmd"), ("Routing", "viewRouting", "3", "cmd"),
+              ("Master", "viewMaster", "4", "cmd"), ("Setup", "viewSetup", ",", "cmd"), None,
+              ("Zoom In", "zoomIn", "=", "cmd"), ("Zoom Out", "zoomOut", "-", "cmd"), ("Zoom to Fit    Z", "fit", "", ""), None,
+              ("Snap to Grid", "snap", "g", "cmd"), ("Bars & Beats Ruler", "beats", "", ""), ("Follow Playhead    F", "follow", "", ""), None,
+              ("Enter Full Screen", "#toggleFullScreen:", "f", "cmd+ctrl")]),
+    ("Window", [("Minimize", "#performMiniaturize:", "m", "cmd"), ("Zoom", "#performZoom:", "", "")]),
+    ("Help", [("Keyboard Shortcuts", "shortcuts", "/", "cmd"), ("Help & Guides", "help", "", "")]),
+]
+# what the built-in macOS actions do on Windows (where there are none)
+WIN_EQUIV = {"#cut:": "cut", "#copy:": "copy", "#paste:": "paste", "#selectAll:": "selectAll"}
+
+
+def build_menu(holder):
+    from webview.menu import Menu, MenuAction, MenuSeparator
+    mac = sys.platform == "darwin"
+
+    def action(cmd):
+        def run_command():
+            w = holder.get("window")
+            if w is not None:   # never block the menu (main) thread on the page
+                threading.Thread(target=lambda: w.evaluate_js(f"window.runCmd && runCmd({cmd!r})"), daemon=True).start()
+        return run_command
+
+    out = []
+    for title, items in MENUS:
+        entries = []
+        for it in items:
+            if it is None:
+                entries.append(MenuSeparator())
+                continue
+            label, cmd, key, mods = it
+            if not mac:
+                label = label.split("    ")[0]
+                if cmd.startswith("#"):
+                    if cmd not in WIN_EQUIV:
+                        continue
+                    cmd = WIN_EQUIV[cmd]
+            a = MenuAction(label, action(cmd))
+            a.meta = (cmd[1:] if cmd.startswith("#") else None, key, mods)
+            entries.append(a)
+        if entries:
+            out.append(Menu(title, entries))
+    return out
+
+
+def mac_menu_shortcuts():
+    """pywebview can't show shortcuts in menus yet: add the key equivalents (and the built-in
+    cut/copy/paste/full-screen actions) as the menus are built."""
+    try:
+        import AppKit
+        from webview.platforms.cocoa import BrowserView
+    except Exception as ex:
+        print("Menu shortcuts unavailable:", ex, flush=True)
+        return
+    original = BrowserView._process_menu_items
+    flags = {"cmd": AppKit.NSEventModifierFlagCommand, "shift": AppKit.NSEventModifierFlagShift,
+             "ctrl": AppKit.NSEventModifierFlagControl, "alt": AppKit.NSEventModifierFlagOption}
+
+    def process(self, menu_items, parent_menu):
+        original(self, menu_items, parent_menu)
+        try:
+            for item, ns in zip(menu_items, parent_menu.itemArray()):
+                meta = getattr(item, "meta", None)
+                if not meta:
+                    continue
+                selector, key, mods = meta
+                if selector:   # a built-in action: goes to whatever has focus (text boxes keep working)
+                    ns.setAction_(selector)
+                    ns.setTarget_(None)
+                if key:
+                    ns.setKeyEquivalent_(key)
+                    mask = 0
+                    for m in mods.split("+"):
+                        mask |= flags.get(m, 0)
+                    ns.setKeyEquivalentModifierMask_(mask)
+        except Exception as ex:
+            print("Menu shortcut:", ex, flush=True)
+    BrowserView._process_menu_items = process
+
+
 def main():
     url = f"http://localhost:{PORT}"
     print("\n  Stobite Compact running", flush=True)
@@ -128,11 +223,15 @@ def main():
     else:
         try:
             import webview
+            webview.settings["SHOW_DEFAULT_MENUS"] = False   # ours include Edit (copy/paste) and View
+            if sys.platform == "darwin":
+                mac_menu_shortcuts()
             window = webview.create_window("Stobite Compact", url, width=1440, height=900, min_size=(900, 600),
                                            background_color="#0e0f11", text_select=False)
+            holder["window"] = window
             if sys.platform == "darwin":
                 mac_window_behaviour(window, holder)
-            webview.start()
+            webview.start(menu=build_menu(holder))
         except Exception as ex:  # no native webview available -> browser
             print("Native window unavailable, using browser:", ex, flush=True)
             webbrowser.open(url)

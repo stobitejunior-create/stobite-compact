@@ -1,6 +1,7 @@
 """Audio device I/O, transport, playback feeder and offline export."""
 import collections
 import json
+import math
 import os
 import sys
 import shutil
@@ -34,7 +35,8 @@ DEFAULT_CFG = {
     "wing_return": False,
     "listen": "auto",                       # where to hear the mix when the WING is the interface
     "stream_out": "",
-    "theme": "auto",                        # Auto (follow the computer) / light / dark                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
+    "theme": "auto",
+    "metronome": False, "countin": False, "click_db": -12.0,   # click: headphones / speakers only                        # Auto (follow the computer) / light / dark                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
 }
 
 
@@ -360,6 +362,9 @@ class Engine:
         self.stream_out = ListenOut()  # the mix for OBS / Zoom (usually "CABLE Input", a virtual cable)
         self.guard = LoopGuard(int(self.cfg["sr"]), self.nch)
         self.out_is_wing = False
+        self.counting = 0            # samples of count-in left before recording starts
+        self._clicks = []            # [wave, index] clicks still sounding
+        self._click_waves = None
         self.quiet = 0          # samples of continuous input silence
         self.asleep = False     # idle: skip mixing until a signal arrives
         self.auto_values = {}
@@ -561,7 +566,7 @@ class Engine:
                 src = np.zeros((frames, nch), np.float32)
                 np.maximum(mixer.m_in, np.abs(raw).max(axis=0), out=mixer.m_in)
             # ---- sleep while idle: nothing playing, every input silent and the mix has rung out
-            busy = self.playing or self.recording
+            busy = self.playing or self.recording or self.counting > 0
             if not busy:
                 in_pk = float(np.abs(src).max()) if src.size else 0.0
                 self.quiet = 0 if in_pk > SLEEP_LEVEL else self.quiet + frames
@@ -590,8 +595,11 @@ class Engine:
                 self._advance(frames)
                 self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
                 return
+            self.stream_out.push(master)          # the stream never hears the click
+            click = self._click(frames)
+            if click is not None:
+                master = master + click[:, None]   # headphones / speakers only from here on
             self.listen.push(master)
-            self.stream_out.push(master)
             if self.out_is_wing and not self.cfg.get("wing_return", False):
                 self._advance(frames)     # nothing goes back into the WING
                 self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
@@ -622,6 +630,52 @@ class Engine:
             traceback.print_exc()
         dt = time.perf_counter() - t0
         self.load = max(self.load * 0.95, dt / (frames / self.sr))
+
+    def _click(self, frames):
+        """The metronome for this block (mono), or None. Beats follow the session tempo; the first
+        beat of each bar is higher. Count-in counts its own bar before recording starts."""
+        on = self.cfg.get("metronome") and (self.playing or self.recording)
+        if not on and not self.counting and not self._clicks:
+            return None
+        if self._click_waves is None or self._click_waves[0] != self.sr:
+            t = np.arange(int(self.sr * 0.03)) / self.sr
+            env = np.exp(-t * 140).astype(np.float32)
+            hi = (np.sin(2 * np.pi * 1600 * t) * env).astype(np.float32)
+            lo = (np.sin(2 * np.pi * 1000 * t) * env).astype(np.float32)
+            self._click_waves = (self.sr, hi, lo)
+        _, hi, lo = self._click_waves
+        bpm = float(self.mixer.state.get("tempo") or 120)
+        per = 60.0 / max(bpm, 20) * self.sr
+        beats = int((self.mixer.state.get("timesig") or [4, 4])[0])
+        if self.counting:
+            done = beats * per - self.counting          # samples into the count-in bar
+            k0, k1 = math.ceil(done / per), math.ceil((done + frames) / per)
+            for k in range(k0, min(k1, beats)):
+                self._clicks.append([hi if k == 0 else lo, -int(round(k * per - done))])
+            self.counting = max(0, self.counting - frames)
+            if self.counting == 0:
+                self._count_done.set()
+        elif on:
+            pos = self.playhead
+            k0, k1 = math.ceil(pos / per), math.ceil((pos + frames) / per)
+            for k in range(k0, k1):
+                self._clicks.append([hi if k % beats == 0 else lo, -int(round(k * per - pos))])
+        if not self._clicks:
+            return None
+        out = np.zeros(frames, np.float32)
+        keep = []
+        for c in self._clicks:
+            wave, i = c
+            start = max(0, -i)                 # where in this block the click begins
+            src = max(0, i)
+            n = min(frames - start, len(wave) - src)
+            if n > 0:
+                out[start:start + n] += wave[src:src + n]
+            c[1] = src + n
+            if c[1] < len(wave):
+                keep.append(c)
+        self._clicks = keep
+        return out * (10 ** (float(self.cfg.get("click_db", -12)) / 20))
 
     def _advance(self, frames):
         """Move the playhead on (and round the loop) after each block."""
@@ -744,6 +798,7 @@ class Engine:
     def stop(self):
         was_rec = self.recording
         self.playing = False
+        self.counting = 0     # stopping during a count-in cancels it
         if self.recording:
             self.recording = False
             self.recorder.stop()
@@ -765,10 +820,28 @@ class Engine:
             return
         if self.stream is None or self.dev_ins == 0:
             raise RuntimeError("No input device running - pick your WING in Setup first")
+        if self.counting:
+            return
         self.promote()
         self.playing = False
         start = self.session.length() if self.cfg.get("rec_at_end", True) and self.playhead < self.session.length() else self.playhead
         self.playhead = start
+        if self.cfg.get("countin"):
+            # one bar of clicks first; the audio thread signals when it has played
+            bpm = float(self.mixer.state.get("tempo") or 120)
+            beats = int((self.mixer.state.get("timesig") or [4, 4])[0])
+            self._count_done = threading.Event()
+            self.asleep = False
+            self.counting = int(beats * 60.0 / max(bpm, 20) * self.sr)
+            self.emit("transport")
+
+            def go():
+                if self._count_done.wait(beats * 60.0 / max(bpm, 20) + 2) and self.counting == 0 and not self.recording:
+                    self.recorder.start(self.session, start)
+                    self.recording = True
+                    self.emit("transport")
+            threading.Thread(target=go, daemon=True).start()
+            return
         self.recorder.start(self.session, start)
         self.recording = True
         self.emit("transport")
@@ -776,6 +849,8 @@ class Engine:
     def transport(self):
         return {"playing": self.playing, "recording": self.recording, "playhead": self.playhead,
                 "sr": self.sr, "recFrames": self.recorder.frames if self.recording else 0,
+                "recStart": self.recorder.start_pos if self.recording else None,
+                "counting": self.counting > 0, "metronome": bool(self.cfg.get("metronome")), "countin": bool(self.cfg.get("countin")),
                 "dropped": self.recorder.dropped, "load": round(self.load, 3),
                 "xruns": self.xruns, "underruns": self.underruns}
 

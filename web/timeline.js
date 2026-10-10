@@ -1,11 +1,27 @@
 // Multitrack timeline: waveforms, clips, split/trim/move/fade, range edits, markers.
 (() => {
   const RULER = 30;
-  const T = { spp: 2048, x0: 0, y0: 0, th: 54, tool: 'select', sel: new Set(), range: null, drag: null, lastTrack: 0, follow: true, autoView: '' };
+  const T = { spp: 2048, x0: 0, y0: 0, th: 54, tool: 'select', sel: new Set(), range: null, drag: null, lastTrack: 0, follow: true, autoView: '',
+    snap: false, beats: false, clipboard: null };
+  try { T.snap = localStorage.getItem('stobite.snap') === '1'; T.beats = localStorage.getItem('stobite.beats') === '1'; } catch (e) { /* storage off */ }
+  // ---- musical grid (session tempo and time signature)
+  const bpm = () => +(S.mixer?.tempo) || 120;
+  const beatsPerBar = () => (S.mixer?.timesig || [4, 4])[0];
+  const beatLen = () => 60 / bpm() * sr();
+  function gridUnit() {   // the finest beat / bar step that's still at least 12 px apart
+    let u = beatLen();
+    if (u / T.spp < 12) { u *= beatsPerBar(); while (u / T.spp < 12) u *= 2; }
+    return u;
+  }
+  const snapPos = p => T.snap ? Math.round(p / gridUnit()) * gridUnit() : p;
+  window.barsBeats = pos => {   // "12.3.2" style position, for the clock
+    const b = beatLen(), n = beatsPerBar(), beat = Math.floor(pos / b), frac = pos / b - beat;
+    return `${Math.floor(beat / n) + 1}.${(beat % n) + 1}.${Math.floor(frac * 4) + 1}`;
+  };
   const canvas = $('#tcanvas'), wrap = $('#tcwrap'), heads = $('#theads');
   const g = canvas.getContext('2d');
   const peaks = new Map(); // key file|level -> Uint8Array | 'loading'
-  let dirty = true, W = 0, H = 0, phT = 0, phV = 0;
+  let dirty = true, W = 0, H = 0, phT = 0, phV = 0, phRate = 1;
 
   const clips = () => S.session?.clips || [];
   const nch = () => S.session?.nch || 48;
@@ -82,6 +98,7 @@
       const el = h('div', { class: 'thead', draggable: 'true', style: `top:${r * T.th}px;height:${T.th}px` },
         h('div', { class: 'col', style: `background:${ch.color}` }), h('span', { class: 'tnum' }, t + 1), ic, name, arm, mute, solo, auto, h('div', { class: 'hm' }, mi));
       el.ondblclick = e => { if (e.target === el) openEditor(t); };
+      el.addEventListener('contextmenu', e => { e.preventDefault(); contextMenu(e, trackMenu(t, name)); });
       // drag a track header onto another to reorder (same order as the mixer)
       el.addEventListener('dragstart', e => { if (e.target.closest('input')) return e.preventDefault(); e.dataTransfer.setData('text/x-track', String(t)); el.classList.add('dragging'); });
       el.addEventListener('dragend', () => el.classList.remove('dragging'));
@@ -103,7 +120,29 @@
   $('#armAll').onclick = () => { const any = S.session.armed.some(Boolean); send({ t: 'edit', op: 'arm', args: { armed: S.session.armed.map(() => !any) } }); };
   on('meters', m => {
     for (const he of headEls) if (he.mi) he.mi.style.height = (meterPos((m.pl && !m.rc ? m.p : m.i)[he.t] / 1000) * 100) + '%';
-    phV = m.ph; phT = performance.now();
+    // keep the moving playhead smooth: messages arrive unevenly, so steer towards the engine's
+    // position instead of jumping to it, and never step backwards while playing
+    const now = performance.now();
+    if (m.pl || m.rc) {
+      const shown = playheadNow(), err = m.ph - shown;
+      if (Math.abs(err) > sr() * 0.25) { phV = m.ph; phRate = 1; }   // a real jump (locate, loop)
+      else { phV = shown; phRate = clamp(1 + err / (sr() * 0.3), 0.75, 1.25); }   // catch up gently, never backwards
+    } else { phV = m.ph; phRate = 1; }
+    phT = now;
+    // the waveform being recorded, as it arrives
+    if (m.rc) {
+      if (!T.rec || T.rec.start !== m.rs) T.rec = { start: m.rs, n: 0, peaks: {} };
+      if (m.lp) {
+        if (m.lp0 === T.rec.n) {
+          let add = 0;
+          for (const [c, arr] of Object.entries(m.lp)) { (T.rec.peaks[c] = T.rec.peaks[c] || []).push(...arr); add = arr.length; }
+          T.rec.n += add;
+        } else if (!T.rec.fetching) {   // missed a piece (joined late / dropped message): fetch it all
+          T.rec.fetching = true;
+          api('rec-peaks').then(d => { if (T.rec && d.start === T.rec.start) Object.assign(T.rec, { n: d.n, peaks: d.peaks }); }).finally(() => { if (T.rec) T.rec.fetching = false; });
+        }
+      }
+    } else if (T.rec) T.rec = null;
     if (m.pl || m.rc) invalidate();
   });
 
@@ -135,7 +174,7 @@
   // ---------------------------------------------------------- draw
   function playheadNow() {
     if (!S.tr.playing && !S.tr.recording) return S.tr.playhead;
-    return phV + (performance.now() - phT) / 1000 * sr();
+    return phV + (performance.now() - phT) / 1000 * sr() * phRate;
   }
   on('theme', () => draw());
   function draw() {
@@ -207,21 +246,54 @@
       g.strokeStyle = selected ? CV.waveSel : hexA(col, 0.9); g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
       if (selected && w > 24) { g.fillStyle = '#ffd23f'; g.fillRect(x + gm.fin / T.spp - 3, y + 13, 6, 6); g.fillRect(x + w - gm.fout / T.spp - 3, y + 13, 6, 6); }
     }
-    // live recording blocks
-    if (S.tr.recording && S.meters) {
-      const recStart = playheadNow() - (S.meters.rf || 0);
+    // live recording: a fixed start (from the engine) and the waveform drawn as it comes in
+    if (S.tr.recording && S.meters && S.meters.rs != null) {
+      const recStart = S.meters.rs, x = xOf(recStart), x2 = xOf(playheadNow());
+      const PR = 256;   // samples per live peak value
       for (let t = 0; t < nch(); t++) if (S.session.armed[t]) {
         const r = rowOf(t); if (r < r0 || r > r1) continue;
-        const x = xOf(recStart), x2 = xOf(playheadNow());
-        g.fillStyle = 'rgba(255,77,79,.25)'; g.fillRect(x, yOfRow(r) + 1, x2 - x, T.th - 3);
-        g.fillStyle = 'rgba(255,77,79,.9)'; g.fillRect(x, yOfRow(r) + 1, x2 - x, 3);
+        const y = yOfRow(r) + 1, hh = T.th - 3;
+        g.fillStyle = 'rgba(255,77,79,.18)'; g.fillRect(x, y, x2 - x, hh);
+        g.fillStyle = 'rgba(255,77,79,.9)'; g.fillRect(x, y, x2 - x, 3);
+        const pk = T.rec && T.rec.start === recStart ? T.rec.peaks[t] : null;
+        if (!pk || !pk.length) continue;
+        const top = y + 4, wh = hh - 5, mid = top + wh / 2;
+        g.fillStyle = 'rgba(255,77,79,.95)';
+        const xs = Math.max(0, Math.floor(x)), xe = Math.min(W, Math.ceil(x2));
+        for (let px = xs; px < xe; px++) {
+          const a = (px - x) * T.spp;
+          let i0 = Math.floor(a / PR), i1 = Math.max(i0 + 1, Math.floor((a + T.spp) / PR));
+          if (i0 >= pk.length) break;
+          let mx = 0; for (let i = i0; i < i1 && i < pk.length; i++) if (pk[i] > mx) mx = pk[i];
+          const hv = Math.max(0.5, Math.sqrt(mx / 255) * wh / 2);
+          g.fillRect(px, mid - hv, 1, hv * 2);
+        }
       }
     }
     if (T.autoView) drawAutomation(r0, r1);
+    // grid lines while snapping
+    if (T.snap || T.beats) {
+      const u = gridUnit(), bar = beatLen() * beatsPerBar();
+      for (let p = Math.floor(T.x0 / u) * u; ; p += u) {
+        const x = xOf(p); if (x > W) break;
+        g.fillStyle = Math.abs(p / bar - Math.round(p / bar)) < 1e-6 ? CV.ruleLine : CV.tick;
+        g.fillRect(Math.round(x), RULER, 1, H);
+      }
+    }
     // ruler
     g.fillStyle = CV.ruler; g.fillRect(0, 0, W, RULER); g.fillStyle = CV.ruleLine; g.fillRect(0, RULER - 1, W, 1);
     g.fillStyle = CV.text; g.font = '10.5px ui-monospace, Menlo, monospace';
-    for (let s = firstSec; ; s += step) {
+    if (T.beats) {
+      const bl = beatLen(), n = beatsPerBar(), bar = bl * n;
+      let every = 1; while (bar * every / T.spp < 40) every *= 2;   // label every Nth bar so numbers don't collide
+      for (let b = Math.floor(T.x0 / bar); ; b++) {
+        const x = xOf(b * bar); if (x > W) break;
+        if (x < -60) continue;
+        g.fillRect(Math.round(x), RULER - 9, 1, 9);
+        if (b % every === 0) g.fillText(String(b + 1), Math.round(x) + 3, 12);
+        if (bl / T.spp > 6) for (let k = 1; k < n; k++) g.fillRect(Math.round(xOf(b * bar + k * bl)), RULER - 4, 1, 4);
+      }
+    } else for (let s = firstSec; ; s += step) {
       const x = xOf(s * sr()); if (x > W) break;
       if (x < -60) continue;
       g.fillRect(Math.round(x), RULER - 9, 1, 9);
@@ -364,7 +436,7 @@
   });
 
   canvas.addEventListener('pointerdown', e => {
-    if (e.button !== 0 || !S.session) return;
+    if (e.button !== 0 || !S.session || e.ctrlKey && navigator.platform.includes('Mac')) return;
     canvas.setPointerCapture(e.pointerId);
     const rect = canvas.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top;
     const sx = e.clientX, sy = e.clientY;
@@ -397,7 +469,7 @@
       } else {
         if (!e.shiftKey) T.sel.clear();
         const r = clamp(rowAt(y), 0, vis.length - 1);
-        T.range = { s: sOf(x), e: sOf(x), r0: r, r1: r };
+        T.range = { s: snapPos(sOf(x)), e: snapPos(sOf(x)), r0: r, r1: r };
         T.drag = { type: 'range', moved: false };
         renderClipbar();
       }
@@ -413,8 +485,15 @@
         const p = d.points[d.idx], lo = d.idx > 0 ? d.points[d.idx - 1][0] + 1 : 0, hi = d.idx < d.points.length - 1 ? d.points[d.idx + 1][0] - 1 : Infinity;
         p[0] = clamp(sOf(cx), lo, hi); p[1] = fromN(laneN(d.row, cy));
       }
-      else if (d.type === 'range') { T.range.e = sOf(cx); T.range.r1 = clamp(rowAt(cy), 0, vis.length - 1); renderClipbar(); }
-      else { d.ds = Math.round(dx * T.spp); d.dr = d.type === 'move' ? Math.round(dy / T.th) : 0; }
+      else if (d.type === 'range') { T.range.e = snapPos(sOf(cx)); T.range.r1 = clamp(rowAt(cy), 0, vis.length - 1); renderClipbar(); }
+      else {
+        let ds = Math.round(dx * T.spp);
+        if (T.snap && d.clip) {   // the edge being dragged lands on the grid
+          const c = d.clip, edge = d.type === 'trimR' ? c.start + c.length : c.start;
+          if (d.type === 'move' || d.type === 'trimL' || d.type === 'trimR') ds = Math.round(snapPos(edge + ds) - edge);
+        }
+        d.ds = ds; d.dr = d.type === 'move' ? Math.round(dy / T.th) : 0;
+      }
       invalidate();
     };
     const up = ev => {
@@ -542,6 +621,121 @@
       const t = k === 'arrowleft' ? ms.filter(m => m < p - sr() * 0.2).pop() : ms.find(m => m > p + 10);
       if (t != null) tr('locate', { pos: t });
     }
+  });
+
+  // ---------------------------------------------------------- clip actions (menu bar, shortcuts, right-click)
+  const selClips = () => clips().filter(c => T.sel.has(c.id));
+  const selIds = () => selClips().map(c => c.id);
+  const need = (n = 1) => { if (T.sel.size >= n) return true; toast(n > 1 ? `Select ${n} or more clips first` : 'Select a clip first', true); return false; };
+  const edit = (op, args) => send({ t: 'edit', op, args });
+  function copySel() {
+    const cs = selClips(); if (!cs.length) { toast('Select clips to copy', true); return false; }
+    const t0 = Math.min(...cs.map(c => c.start));
+    T.clipboard = { clips: cs.map(c => ({ ...c })), t0, r0: Math.min(...cs.map(c => Math.max(rowOf(c.track), 0))) };
+    toast(`Copied ${cs.length} clip${cs.length === 1 ? '' : 's'}`);
+    return true;
+  }
+  function pasteAt(pos = Math.round(playheadNow()), row = null) {
+    const cb = T.clipboard; if (!cb) return toast('Nothing copied yet', true);
+    const dr = row == null ? 0 : row - cb.r0;
+    edit('paste', { clips: cb.clips.map(c => {
+      const r = rowOf(c.track), nr = r < 0 ? -1 : clamp(r + dr, 0, chanRows - 1);
+      return { ...c, start: Math.max(0, Math.round(snapPos(pos) + (c.start - cb.t0))), track: nr < 0 ? c.track : vis[nr] };
+    }) });
+  }
+  const fadeTo = (key, ms) => need() && edit('set', { ids: selIds(), [key]: Math.round(ms / 1000 * sr()) });
+  window.TL = {
+    copy: copySel,
+    cut: () => copySel() && deleteSel(),
+    paste: () => pasteAt(),
+    duplicate: () => need() && edit('duplicate', { ids: selIds() }),
+    delete: deleteSel,
+    selectAll: () => { clips().forEach(c => T.sel.add(c.id)); renderClipbar(); invalidate(); },
+    select: ids => { T.sel = new Set(ids); renderClipbar(); invalidate(); },
+    deselect: () => { T.sel.clear(); T.range = null; renderClipbar(); invalidate(); },
+    split: splitAtPlayhead,
+    join: () => need(2) && edit('join', { ids: selIds() }),
+    normalize: () => need() && edit('normalize', { ids: selIds() }),
+    reverse: () => need() && edit('reverse', { ids: selIds() }),
+    mute: () => { if (!need()) return; const m = !selClips()[0].mute; edit('set', { ids: selIds(), mute: m }); },
+    rename: () => { if (!need()) return; const n = prompt('Clip name', selClips()[0].name); if (n) edit('set', { ids: selIds(), name: n }); },
+    fadeIn: () => fadeTo('fin', 500), fadeOut: () => fadeTo('fout', 1500),
+    noFades: () => need() && edit('set', { ids: selIds(), fin: 0, fout: 0 }),
+    marker: () => edit('marker', { pos: Math.round(playheadNow()) }),
+    zoomIn: () => $('#zoomIn').click(), zoomOut: () => $('#zoomOut').click(), fit: () => fit(),
+    tool: setTool,
+    toggleSnap: () => { T.snap = !T.snap; try { localStorage.setItem('stobite.snap', T.snap ? '1' : '0'); } catch (e) { } toast('Snap to grid ' + (T.snap ? 'on' : 'off')); invalidate(); emit('tlstate'); },
+    toggleBeats: () => { T.beats = !T.beats; try { localStorage.setItem('stobite.beats', T.beats ? '1' : '0'); } catch (e) { } invalidate(); emit('tlstate'); },
+    toggleFollow: () => { T.follow = !T.follow; toast('Follow playhead ' + (T.follow ? 'on' : 'off')); },
+    state: () => ({ snap: T.snap, beats: T.beats, sel: T.sel.size, clip: !!T.clipboard }),
+  };
+  // the right-click menus
+  const k = id => CMD[id]?.keys || '';
+  function clipMenu(c) {
+    const n = T.sel.size, many = n > 1 ? ` ${n} clips` : '';
+    return [
+      { label: 'Cut', keys: k('cut'), run: TL.cut }, { label: 'Copy', keys: k('copy'), run: TL.copy },
+      { label: 'Paste', keys: k('paste'), run: TL.paste, disabled: !T.clipboard }, { label: 'Duplicate', keys: k('duplicate'), run: TL.duplicate },
+      '-',
+      { label: 'Split at playhead', keys: k('split'), run: TL.split }, { label: 'Join' + many, keys: k('join'), run: TL.join, disabled: n < 2 },
+      '-',
+      { label: 'Normalize', run: TL.normalize }, { label: 'Reverse', run: TL.reverse },
+      { label: 'Fades', items: [
+        { label: 'Fade in (0.5 s)', run: TL.fadeIn }, { label: 'Fade out (1.5 s)', run: TL.fadeOut },
+        { label: 'Short fades (10 ms)', run: () => { fadeTo('fin', 10); fadeTo('fout', 10); } }, { label: 'Remove fades', run: TL.noFades }] },
+      { label: c.mute ? 'Unmute' : 'Mute', keys: k('muteClip'), run: TL.mute }, { label: 'Rename…', run: TL.rename },
+      '-',
+      { label: 'Export this…', run: () => openExport(c.start, c.start + c.length) },
+      { label: 'Delete', keys: '⌫', run: TL.delete, danger: true },
+    ];
+  }
+  function trackMenu(t, nameInput) {
+    const armed = !!S.session.armed[t], ch = chan(t);
+    return [
+      { label: armed ? 'Disarm' : 'Arm for recording', run: () => { const a = [...S.session.armed]; a[t] = !armed; edit('arm', { armed: a }); } },
+      { label: ch.mute ? 'Unmute' : 'Mute', run: () => setParam(['channels', t, 'mute'], !ch.mute) },
+      { label: ch.solo ? 'Unsolo' : 'Solo', run: () => setParam(['channels', t, 'solo'], !ch.solo) },
+      '-',
+      { label: 'Rename…', run: () => { nameInput.focus(); nameInput.select(); } },
+      { label: 'Instrument…', run: () => pickFor(t) },
+      { label: 'Channel settings…', run: () => openEditor(t) },
+      '-',
+      { label: 'Select all clips on this track', run: () => { T.sel.clear(); clips().filter(c => c.track === t).forEach(c => T.sel.add(c.id)); renderClipbar(); invalidate(); } },
+      { label: 'Paste here', run: () => pasteAt(Math.round(playheadNow()), rowOf(t)), disabled: !T.clipboard },
+    ];
+  }
+  canvas.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    if (!S.session) return;
+    const rect = canvas.getBoundingClientRect(), x = e.clientX - rect.left, y = e.clientY - rect.top, pos = Math.round(snapPos(sOf(x)));
+    if (y < RULER) {
+      const mk = (S.session.markers || []).find(m => { const mx = xOf(m.pos); return x >= mx && x <= mx + 80 && y >= 14; });
+      if (mk) return contextMenu(e, [
+        { label: 'Go to marker', run: () => tr('locate', { pos: mk.pos }) },
+        { label: 'Rename…', run: () => { const n = prompt('Marker name', mk.name); if (n) edit('markerRename', { id: mk.id, name: n }); } },
+        { label: 'Delete marker', danger: true, run: () => edit('markerDelete', { id: mk.id }) }]);
+      return contextMenu(e, [
+        { label: 'Move playhead here', run: () => tr('locate', { pos }) },
+        { label: 'Add marker here', run: () => edit('marker', { pos }) },
+        '-',
+        { label: 'Bars & beats ruler', check: T.beats, run: TL.toggleBeats }, { label: 'Snap to grid', check: T.snap, keys: k('snap'), run: TL.toggleSnap }]);
+    }
+    const ht = hit(x, y);
+    if (ht?.clip) {
+      if (!T.sel.has(ht.clip.id)) { T.sel.clear(); T.sel.add(ht.clip.id); renderClipbar(); invalidate(); }
+      return contextMenu(e, clipMenu(ht.clip));
+    }
+    const row = rowAt(y);
+    contextMenu(e, [
+      { label: 'Paste here', keys: k('paste'), run: () => pasteAt(pos, row >= 0 ? row : null), disabled: !T.clipboard },
+      { label: 'Move playhead here', run: () => tr('locate', { pos }) },
+      { label: 'Add marker here', run: () => edit('marker', { pos }) },
+      '-',
+      { label: 'Select all', keys: k('selectAll'), run: TL.selectAll },
+      { label: 'Import audio…', run: () => $('#btnImport')?.click() },
+      '-',
+      { label: 'Snap to grid', check: T.snap, keys: k('snap'), run: TL.toggleSnap }, { label: 'Bars & beats ruler', check: T.beats, run: TL.toggleBeats },
+    ]);
   });
 
   // ---------------------------------------------------------- clip bar

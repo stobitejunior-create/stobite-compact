@@ -298,6 +298,73 @@ class Session:
                 for i in ids:
                     c = self._clip(i)
                     self.clips.append(dict(c, id=uuid.uuid4().hex[:10], start=c["start"] + c["length"]))
+            elif op == "paste":
+                # clips copied earlier (possibly from another place in the session), placed at a new position
+                new_ids = []
+                for c in a.get("clips") or []:
+                    c = dict(c, id=uuid.uuid4().hex[:10])
+                    c["track"] = int(min(max(int(c["track"]), 0), self.nch - 1))
+                    c["start"] = max(0, int(c["start"]))
+                    if not os.path.exists(os.path.join(self.dir, c["file"])):
+                        continue
+                    self.clips.append(c)
+                    new_ids.append(c["id"])
+                self.last_new = new_ids
+            elif op == "normalize":
+                # clip gain so its loudest peak sits at -1 dBFS
+                for i in ids:
+                    c = self._clip(i)
+                    with sf.SoundFile(os.path.join(self.dir, c["file"])) as f:
+                        f.seek(c["offset"])
+                        d = f.read(c["length"], dtype="float32", always_2d=True)[:, 0]
+                    pk = float(np.abs(d).max()) if len(d) else 0.0
+                    if pk > 1e-6:
+                        c["gain"] = round(float(np.clip(-1.0 - 20 * np.log10(pk), -24, 24)), 1)
+            elif op == "reverse":
+                for i in ids:
+                    c = self._clip(i)
+                    with sf.SoundFile(os.path.join(self.dir, c["file"])) as f:
+                        f.seek(c["offset"])
+                        d = f.read(c["length"], dtype="float32", always_2d=True)[:, 0]
+                    rel = f"audio/Reversed_{uuid.uuid4().hex[:8]}.wav"
+                    sf.write(os.path.join(self.dir, rel), d[::-1], self.sr, subtype="PCM_24")
+                    self.write_peaks(rel, d[::-1])
+                    c.update(file=rel, offset=0, fileLength=len(d), fin=c.get("fout", 0), fout=c.get("fin", 0),
+                             name=(c["name"][9:] if c["name"].startswith("Reversed ") else "Reversed " + c["name"]))
+            elif op == "join":
+                # clips on one track become one clip: kept as-is when they already run on in one file,
+                # otherwise rendered (gain and fades included) into a new file
+                cs = sorted((self._clip(i) for i in ids), key=lambda c: c["start"])
+                if len(cs) < 2 or len({c["track"] for c in cs}) != 1:
+                    raise ValueError("Pick two or more clips on the same track to join")
+                seamless = all(b["file"] == a_["file"] and b["start"] == a_["start"] + a_["length"]
+                               and b["offset"] == a_["offset"] + a_["length"] and (a_.get("gain") or 0) == (b.get("gain") or 0)
+                               for a_, b in zip(cs, cs[1:]))
+                first, last = cs[0], cs[-1]
+                end = max(c["start"] + c["length"] for c in cs)
+                if seamless:
+                    first["length"] = end - first["start"]
+                    first["fout"] = last.get("fout", 0)
+                else:
+                    buf = np.zeros(end - first["start"], np.float32)
+                    for c in cs:
+                        with sf.SoundFile(os.path.join(self.dir, c["file"])) as f:
+                            f.seek(c["offset"])
+                            d = f.read(c["length"], dtype="float32", always_2d=True)[:, 0]
+                        env = np.ones(len(d), np.float32)
+                        if c.get("fin"):
+                            n = min(int(c["fin"]), len(d)); env[:n] *= np.linspace(0, 1, n, dtype=np.float32)
+                        if c.get("fout"):
+                            n = min(int(c["fout"]), len(d)); env[len(d) - n:] *= np.linspace(1, 0, n, dtype=np.float32)
+                        d = d * env * (10 ** ((c.get("gain") or 0) / 20))
+                        o = c["start"] - first["start"]
+                        buf[o:o + len(d)] += d
+                    rel = f"audio/Joined_{uuid.uuid4().hex[:8]}.wav"
+                    sf.write(os.path.join(self.dir, rel), buf, self.sr, subtype="PCM_24")
+                    self.write_peaks(rel, buf)
+                    first.update(file=rel, offset=0, length=len(buf), fileLength=len(buf), gain=0.0, fin=0, fout=0, mute=False)
+                gone = {c["id"] for c in cs[1:]}
+                self.clips = [c for c in self.clips if c["id"] not in gone]
             elif op == "marker":
                 self.markers.append({"id": uuid.uuid4().hex[:8], "pos": int(a["pos"]),
                                      "name": a.get("name") or f"Marker {len(self.markers) + 1}"})
@@ -455,7 +522,9 @@ class Recorder:
         self.files = {c: sf.SoundFile(os.path.join(session.dir, r), "w", session.sr, 1, "PCM_24")
                       for c, r in self.rels.items()}
         self.peak_acc = {c: [] for c in self.chans}
-        self.live_peaks = {c: [] for c in self.chans}
+        # waveform outline while recording: one growing array per channel (doubles when full)
+        self.flat = {c: np.zeros(4096, np.float16) for c in self.chans}
+        self.n = 0
         self.frames = 0
         self.dropped = 0
         self.active = True
@@ -476,7 +545,7 @@ class Recorder:
                 pending.append(self.q.get(timeout=0.1))
             except queue.Empty:
                 pass
-            if pending and (sum(len(p) for p in pending) >= 12000 or not self.active):
+            if pending and (sum(len(p) for p in pending) >= 4800 or not self.active):   # ~0.1 s: the waveform keeps up
                 data = np.concatenate(pending)
                 pending = []
                 for j, c in enumerate(self.chans):
@@ -494,12 +563,26 @@ class Recorder:
             self._roll_peaks()
 
     def _roll_peaks(self):
+        add = 0
         for c in self.chans:
             buf = np.concatenate(self.peak_acc[c]) if self.peak_acc[c] else np.zeros(0, np.float32)
             n = len(buf) // PEAK_RES
             if n:
-                self.live_peaks[c].append(np.abs(buf[: n * PEAK_RES]).reshape(n, PEAK_RES).max(axis=1).astype(np.float16))
+                pk = np.abs(buf[: n * PEAK_RES]).reshape(n, PEAK_RES).max(axis=1).astype(np.float16)
+                arr = self.flat[c]
+                if self.n + n > len(arr):
+                    grown = np.zeros(max(len(arr) * 2, self.n + n), np.float16)
+                    grown[: self.n] = arr[: self.n]
+                    self.flat[c] = arr = grown
+                arr[self.n: self.n + n] = pk
+                add = n
             self.peak_acc[c] = [buf[n * PEAK_RES:]]
+        self.n += add   # every channel gets the same number of samples, so one count serves all
+
+    def peaks_from(self, k):
+        """Waveform outline values from index k onwards, per channel, as 0-255."""
+        n = self.n
+        return {c: np.minimum(self.flat[c][k:n].astype(np.float32) * 255, 255).astype(np.uint8).tolist() for c in self.chans}, n
 
     def stop(self):
         """Finish writing; returns the new clips."""
@@ -512,7 +595,7 @@ class Recorder:
         for c in self.chans:
             self.files[c].close()
             rel = self.rels[c]
-            pk = np.concatenate(self.live_peaks[c]) if self.live_peaks[c] else np.zeros(0, np.float16)
+            pk = self.flat[c][: self.n].copy()
             np.save(s.peaks_path(rel), pk)
             if self.frames:
                 clips.append(Session.new_clip(c, rel, self.start_pos, self.frames, name=f"Take {s.take}"))

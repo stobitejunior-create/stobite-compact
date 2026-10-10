@@ -148,8 +148,17 @@ class App:
                    "mgr": round(m["mgr"], 1), "lim": round(m["lim"], 1),
                    "ph": e.playhead, "pl": e.playing, "rc": e.recording, "ld": round(e.load, 2)}
             if e.recording:
-                msg["rf"] = e.recorder.frames
-                msg["dr"] = e.recorder.dropped
+                rec = e.recorder
+                msg["rf"] = rec.frames
+                msg["dr"] = rec.dropped
+                msg["rs"] = rec.start_pos
+                # the newest part of the waveform being recorded (clients ask for all of it if they missed some)
+                if getattr(self, "_rec_id", None) is not rec.flat:
+                    self._rec_id, self._rec_sent = rec.flat, 0
+                if rec.n > self._rec_sent:
+                    chunk, n = rec.peaks_from(self._rec_sent)
+                    msg["lp"], msg["lp0"] = chunk, self._rec_sent
+                    self._rec_sent = n
             lm, ls, corr = e.mixer.loud.read()
             msg["lu"] = [round(lm, 1), round(ls, 1), round(corr, 2)]
             msg["tpx"] = round(20 * math.log10(max(e.mixer.loud.tp_max, 1e-6)), 1)
@@ -281,7 +290,7 @@ class App:
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
-                          "wing_return", "listen", "stream_out", "theme"):
+                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
@@ -333,6 +342,12 @@ class App:
                 job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"),
                                body.get("depth", "24"), body.get("kbps"), body.get("channels", 2))
                 return web.json_response(job)
+            if name == "rec-peaks":
+                rec = e.recorder
+                if not e.recording:
+                    return web.json_response({"start": 0, "n": 0, "peaks": {}})
+                chunk, n = rec.peaks_from(0)
+                return web.json_response({"start": rec.start_pos, "n": n, "peaks": chunk})
             if name == "peaks":
                 spp = int(q.get("spp", 1024))
                 data = e.session.peaks(q["file"], spp).tobytes()
