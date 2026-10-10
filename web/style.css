@@ -652,3 +652,13 @@ kbd { font-family: var(--mono); font-size: 11.5px; background: var(--bg3); borde
 .pill.tempo { cursor: pointer; font-family: var(--mono); color: var(--text); }
 .pill.tempo:hover { border-color: var(--accent); }
 .clock { cursor: pointer; }
+
+/* before / after */
+.tbtn.ab { width: auto; padding: 0 9px; font-weight: 700; font-size: 11px; letter-spacing: .5px; }
+.tbtn.ab.on { background: var(--yellow); color: #000; border-color: var(--yellow); }
+body.comparing #top { box-shadow: inset 0 -2px 0 var(--yellow); }
+.tog.byp { width: auto; padding: 0 6px; font-size: 9.5px; letter-spacing: .3px; }
+.tog.byp.on { background: var(--yellow); color: #000; border-color: var(--yellow); }
+.strip.bypassed .badges, .strip.bypassed .eqthumb { opacity: .35; }
+.strip.bypassed .sname { outline: 2px dashed var(--yellow); outline-offset: -2px; }
+.btn.byp.on { background: var(--yellow); color: #000; border-color: var(--yellow); }

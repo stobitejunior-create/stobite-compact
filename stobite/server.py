@@ -260,6 +260,9 @@ class App:
             if e.playing:
                 e.locate(e.playhead)
             await self.broadcast({"t": "session", "session": e.session.public()})
+        elif t == "compare":   # before / after: only what's heard here changes, never the stream
+            e.mixer.compare = bool(m.get("on"))
+            await self.broadcast({"t": "compare", "on": e.mixer.compare, "match": round(getattr(e.mixer, "match_db", 0.0), 1)})
         elif t == "spectrum":
             self.want_spectrum = bool(m.get("on"))
         elif t == "wing":

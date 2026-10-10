@@ -39,6 +39,7 @@
     ['metronome', 'Transport', 'Metronome', { k: 'k' }, () => toggleCfg('metronome', 'Metronome')],
     ['countIn', 'Transport', 'Count-in', { k: 'k', shift: 1 }, () => toggleCfg('countin', 'Count-in')],
     ['tempo', 'Transport', 'Tempo & time signature…', null, () => tempoDialog()],
+    ['compare', 'View', 'Compare before / after', { k: '\\' }, () => setCompare(!S.compare)],
     // View
     ['viewEdit', 'View', 'Edit', { k: '1', mod: 1 }, () => showView('edit')],
     ['viewMixer', 'View', 'Mixer', { k: '2', mod: 1 }, () => showView('mixer')],
@@ -180,7 +181,22 @@
   const metro = h('button', { class: 'tbtn', id: 'btnMetro', title: 'Metronome (K)', onclick: () => runCmd('metronome') }, icon('metronome', 18));
   const count = h('button', { class: 'tbtn count', id: 'btnCount', title: 'Count-in before recording (⇧K)', onclick: () => runCmd('countIn') }, '1234');
   const tempo = h('button', { class: 'pill tempo', title: 'Tempo & time signature', onclick: () => tempoDialog() });
-  $('#btnLoop').after(metro, count);
+  // A/B: click to switch, or hold to hear "before" only while held (like a photo editor)
+  window.setCompare = on => send({ t: 'compare', on: !!on });
+  const ab = h('button', { class: 'tbtn ab', id: 'btnAB', title: 'Before / after (\\): click to switch, hold to peek. Only what you hear changes, never the stream.' }, 'A/B');
+  let holdT = 0, held = false;
+  ab.onpointerdown = () => { held = false; holdT = setTimeout(() => { held = true; setCompare(true); }, 300); };
+  ab.onpointerup = ab.onpointerleave = e => {
+    clearTimeout(holdT);
+    if (held) { held = false; setCompare(false); }
+    else if (e.type === 'pointerup') setCompare(!S.compare);
+  };
+  on('compare', () => {
+    ab.classList.toggle('on', !!S.compare);
+    ab.textContent = S.compare ? 'BEFORE' : 'A/B';
+    document.body.classList.toggle('comparing', !!S.compare);
+  });
+  $('#btnLoop').after(metro, count, ab);
   $('#clock').after(tempo);
   let clockBars = false;
   try { clockBars = localStorage.getItem('stobite.clock') === 'bars'; } catch (e) { }

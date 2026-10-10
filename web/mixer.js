@@ -144,6 +144,15 @@
     return b;
   }
 
+  // bypass: hear a channel / bus / master without its processing (fader, pan and sends stay)
+  function bypassBtn(path, strip) {
+    const b = h('button', { class: 'tog byp' + (getPath(S.mixer, path) ? ' on' : ''), title: 'Bypass: hear it without its processing', onclick: () => setParam(path, !getPath(S.mixer, path)) }, 'BYP');
+    const show = v => { b.classList.toggle('on', !!v); strip.classList.toggle('bypassed', !!v); };
+    bind(path, { set: show });
+    setTimeout(() => show(getPath(S.mixer, path)));
+    return b;
+  }
+
   function channelStrip(c, showSends) {
     const ch = S.mixer.channels[c];
     const P = (...p) => ['channels', c, ...p];
@@ -164,6 +173,7 @@
       h('div', { class: 'eqthumb', onclick: () => openEditor(c) }, thumb), badges, h('div', { class: 'gr', title: 'Compressor gain reduction' }, gr),
       showSends ? sends : null, h('div', { class: 'cen' }, pan.el),
       h('div', { class: 'row' }, muteBtn(P('mute')), muteBtn(P('solo'), 's', 'S'), autoModeButton(String(c))),
+      h('div', { class: 'row' }, bypassBtn(P('bypass'), el)),
       faderBlock(P('fader'), [meter], db), db);
     dragReorder(el, c);
     stripEls.push({ el, thumb, gr, meter, name, c });
@@ -205,6 +215,7 @@
       chainBadges(['buses', i], b.chain), h('div', { class: 'badges' }, badge('DUCK', P('duck', 'on'), 'Ducking (sidechain)')),
       h('div', { class: 'grs' }, h('div', { class: 'gr', title: 'Compression' }, comp), h('div', { class: 'gr lim', title: 'Limiter' }, lim), h('div', { class: 'gr duck', title: 'Ducking' }, duck)),
       h('div', { class: 'row' }, muteBtn(P('mute')), autoModeButton(`bus:${i}`)),
+      h('div', { class: 'row' }, bypassBtn(P('bypass'), el)),
       faderBlock(P('fader'), [L, R], db), db);
     busEls.push({ el, thumb, comp, lim, duck, L, R, id: b.id, i });
     return el;
@@ -256,6 +267,7 @@
       chainBadges(['master'], m.chain),
       h('div', { class: 'gr' }, gr), h('div', { class: 'cen' }, ceil ? ceil.el : null),
       h('div', { class: 'row' }, muteBtn(['master', 'mute']), autoModeButton('master')),
+      h('div', { class: 'row' }, bypassBtn(['master', 'bypass'], el)),
       faderBlock(['master', 'fader'], [L, R], db), db);
     masterEls = { thumb, L, R, gr };
     return el;
@@ -553,6 +565,11 @@
     const S_ = (p, options, extra) => { const s = sel(p, options, extra); edCtl.set(key(p), { set: v => s.value = v }); return s; };
     const help = topic => !window.openGuide ? null : h('button', { class: 'help', title: 'What does this do?', onclick: () => openGuide(topic) }, '?');
     const panel = (title, topic, togglePath, ...kids) => h('div', { class: 'panel' }, h('h4', {}, title, help(topic), togglePath ? T(togglePath) : null), ...kids);
+    const byp = $('#edBypass');
+    byp.hidden = kind === 'fx';
+    byp.classList.toggle('on', !!st.bypass);
+    byp.textContent = st.bypass ? 'Bypassed' : 'Bypass';
+    byp.onclick = () => { const v = !getPath(S.mixer, P('bypass')); setParam(P('bypass'), v); byp.classList.toggle('on', v); byp.textContent = v ? 'Bypassed' : 'Bypass'; };
     $('#edName').value = st.name;
     $('#edName').disabled = kind === 'master';
     $('#edName').onchange = e => kind !== 'master' && setParam(P('name'), e.target.value);

@@ -595,11 +595,16 @@ class Engine:
                 self._advance(frames)
                 self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
                 return
-            self.stream_out.push(master)          # the stream never hears the click
+            self.stream_out.push(master)          # the stream never hears the click or the before/after compare
+            proc = master                         # what the WING gets back (if that's switched on)
+            hear = master                         # what you listen on: headphones / speakers
+            if mixer.compare and mixer.before_out is not None and mixer.before_out.shape == master.shape:
+                hear = mixer.before_out           # the unprocessed "before" mix
             click = self._click(frames)
             if click is not None:
-                master = master + click[:, None]   # headphones / speakers only from here on
-            self.listen.push(master)
+                hear = hear + click[:, None]
+            self.listen.push(hear)
+            master = proc if self.out_is_wing else hear
             if self.out_is_wing and not self.cfg.get("wing_return", False):
                 self._advance(frames)     # nothing goes back into the WING
                 self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
@@ -618,7 +623,7 @@ class Engine:
             ml, mr = int(self.cfg.get("mon_l", -1)), int(self.cfg.get("mon_r", -1))
             mode = mixer.state.get("monitor", "stereo")
             if (0 <= ml < outs and 0 <= mr < outs) or mode != "stereo":
-                mon = monitor_mix(master, mode)
+                mon = monitor_mix(hear if 0 <= ml < outs and 0 <= mr < outs else master, mode)
                 if 0 <= ml < outs and 0 <= mr < outs:
                     outdata[:, ml], outdata[:, mr] = mon[:, 0], mon[:, 1]
                 elif mode != "stereo" and 0 <= l < outs and 0 <= r < outs:

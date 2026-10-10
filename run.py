@@ -123,6 +123,7 @@ MENUS = [
     ("View", [("Edit", "viewEdit", "1", "cmd"), ("Mixer", "viewMixer", "2", "cmd"), ("Routing", "viewRouting", "3", "cmd"),
               ("Master", "viewMaster", "4", "cmd"), ("Setup", "viewSetup", ",", "cmd"), None,
               ("Zoom In", "zoomIn", "=", "cmd"), ("Zoom Out", "zoomOut", "-", "cmd"), ("Zoom to Fit    Z", "fit", "", ""), None,
+              ("Compare Before / After    \\", "compare", "", ""), None,
               ("Snap to Grid", "snap", "g", "cmd"), ("Bars & Beats Ruler", "beats", "", ""), ("Follow Playhead    F", "follow", "", ""), None,
               ("Enter Full Screen", "#toggleFullScreen:", "f", "cmd+ctrl")]),
     ("Window", [("Minimize", "#performMiniaturize:", "m", "cmd"), ("Zoom", "#performZoom:", "", "")]),

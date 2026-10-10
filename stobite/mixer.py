@@ -446,6 +446,7 @@ class Mixer:
             master=0.0 if st["master"]["mute"] else dsp.db_to_lin(st["master"]["fader"]),
             inputs=[c.get("input", f"in:{i}") for i, c in enumerate(chs)],
             cables=[(cb.get("src", "none"), dsp.db_to_lin(cb.get("gain", 0))) for cb in st.get("cables", [])],
+            bypass=np.array([i for i, ch in enumerate(chs) if ch.get("bypass")], dtype=np.int64),
         )
         self._src_cache = {}
         self.master_limited = any(m.get("type") == "limiter" and m.get("on", True) for m in st["master"].get("chain") or [])
@@ -676,6 +677,36 @@ class Mixer:
             return -120.0
         return 20 * np.log10(max(float(np.abs(sig).max()), 1e-9))
 
+    # ------------------------------------------------------------- before / after
+    compare = False         # True: self.before_out holds the unprocessed mix (for headphones / speakers)
+    before_out = None
+    _e_after = 0.0
+    _e_before = 0.0
+
+    def _before(self, Yr, c, master_g, frames):
+        """The mix with no processing: channels summed through the same faders, pans and buses
+        (bus faders only), no EQ / dynamics / FX / master chain. Level-matched to the processed
+        mix, so the louder one doesn't just sound "better"."""
+        di = c["di"]
+        for bid in c["order"]:
+            k = di[bid]
+            sig = Yr[:, 2 * k:2 * k + 2] * c["bus_gain"][bid]
+            out = c["buses"][bid].get("out", "master")
+            if out in di and out != bid:
+                j = di[out]
+                Yr[:, 2 * j:2 * j + 2] += sig
+        out = Yr[:, 0:2] * master_g
+        e = float((out.astype(np.float64) ** 2).mean()) if frames else 0.0
+        if e > 1e-8:
+            self._e_before += (e - self._e_before) * min(1.0, frames / (self.fs * 3.0))
+        if not self.compare:
+            self.before_out = None
+            return
+        match = (self._e_after / self._e_before) ** 0.5 if self._e_before > 1e-12 and self._e_after > 1e-12 else 1.0
+        self.match_db = 20 * np.log10(min(max(match, 10 ** (-24 / 20)), 10 ** (24 / 20)))
+        out = out * (10 ** (self.match_db / 20))
+        self.before_out = np.clip(out, -1.0, 1.0).astype(np.float32)
+
     # ------------------------------------------------------------- audio
     def process(self, x, direct_out=None):
         """x: (frames, nch) float32 channel inputs (already routed), modified in place.
@@ -704,7 +735,13 @@ class Mixer:
         dormant = self.ch_quiet > self.fs * 0.5
         # ---- channel strips
         x *= c["pre"]
+        # before / after: the same channels, faders and routing with no processing at all
+        raw = x.copy()
+        byp = c["bypass"]
+        keep = x[:, byp].copy() if byp.size else None
         self.chains.process(x, dormant)   # each channel's own chain, in its own order
+        if keep is not None:
+            x[:, byp] = keep              # bypassed channels pass through untouched
         if direct_out is not None:
             direct_out[:] = x
         if self.focus is not None and 0 <= self.focus < self.nch:
@@ -724,6 +761,7 @@ class Mixer:
         np.maximum(self.m_post, peak * fad, out=self.m_post)
         np.maximum(self.m_rms, np.sqrt((x * x).mean(axis=0)) * fad, out=self.m_rms)
         Y = x @ M
+        self._before(raw @ M, c, master_g, frames)
 
         # ---- FX returns (channel sends now, bus sends from the previous block)
         if c["any_send"]:
@@ -767,7 +805,7 @@ class Mixer:
                 if strip is not None:
                     strip.duck.gr = 0.0
                 continue
-            if strip is not None:
+            if strip is not None and not bs.get("bypass"):
                 strip.process(sig, lambda spec: self._sc_signal(spec, x, fad))
                 duck = bs.get("duck") or {}
                 if duck.get("on") and duck.get("src"):
@@ -793,12 +831,16 @@ class Mixer:
             out[:] = 0.0
             self.loud.silence(frames)
         else:
-            self.master_strip.process(out, lambda spec: self._sc_signal(spec, x, fad))
+            if not self.state["master"].get("bypass"):
+                self.master_strip.process(out, lambda spec: self._sc_signal(spec, x, fad))
             out *= master_g
             if self.master_limited:
                 np.clip(out, -1.0, 1.0, out=out)
             self.loud.process(out)
         self.last_out_peak = float(np.abs(out).max()) if frames else 0.0
+        e = float((out.astype(np.float64) ** 2).mean()) if frames else 0.0
+        if e > 1e-8:   # only while there is sound (about -80 dBFS and up)
+            self._e_after += (e - self._e_after) * min(1.0, frames / (self.fs * 3.0))
         np.maximum(self.m_master, np.abs(out).max(axis=0), out=self.m_master)
         self.m_mrms = max(self.m_mrms, float(np.sqrt((out * out).mean())))
         self.m_tp = max(self.m_tp, self.loud.last_tp)
