@@ -65,14 +65,26 @@ _TP_H = _kaiser_lowpass(48, 0.125, 6.0) * 4.0       # 4x interpolation filter
 _TP_PHASES = [_TP_H[p::4] for p in range(4)]        # polyphase: one short filter per phase
 
 
-def true_peak(x):
-    """Per-sample true-peak envelope (max over the 4 interpolated phases), x: (frames, ch)."""
+TP_HIST = len(_TP_PHASES[0])   # samples of history the interpolation filter needs
+
+
+def true_peak(x, hist=None):
+    """Per-sample true-peak envelope (max over the 4 interpolated phases), x: (frames, ch).
+    hist: the previous block's last TP_HIST samples (updated in place). Without it each block is
+    measured as if silence came before it, which misreads the first few samples (up to ~1 dB high)."""
     frames = x.shape[0]
+    xx = x if hist is None else np.concatenate([hist, x])
+    off = xx.shape[0] - frames
     env = np.abs(x).max(axis=1)
     for ph in _TP_PHASES:
         for c in range(x.shape[1]):
-            y = np.convolve(x[:, c], ph)[:frames]
+            y = np.convolve(xx[:, c], ph)[off:off + frames]
             np.maximum(env, np.abs(y), out=env)
+    if hist is not None:
+        if frames >= len(hist):
+            hist[:] = x[-len(hist):]
+        else:
+            hist[:] = np.concatenate([hist[frames:], x])
     return env
 
 
@@ -385,7 +397,10 @@ class Loudness:
 
     def process(self, x):
         if len(x):
-            self.last_tp = float(true_peak(x).max())
+            h = getattr(self, "_tp_hist", None)
+            if h is None or h.shape[1] != x.shape[1]:
+                h = self._tp_hist = np.zeros((TP_HIST, x.shape[1]), np.float32)
+            self.last_tp = float(true_peak(x, h).max())
             self.tp_max = max(self.tp_max, self.last_tp)
         k = sosfilt_multi(self.sos, x, self.zi)
         p = (k ** 2).sum(axis=1)

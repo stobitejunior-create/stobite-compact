@@ -8,7 +8,7 @@ import math
 
 import numpy as np
 
-from .dsp import SUB, Dynamics, FilterBank, biquad, strip_sos, _db, _tc, BW_Q, sosfilt_multi, true_peak
+from .dsp import TP_HIST, SUB, Dynamics, FilterBank, biquad, strip_sos, _db, _tc, BW_Q, sosfilt_multi, true_peak
 
 try:
     import pedalboard as pb
@@ -246,7 +246,10 @@ class LookaheadLimiter:
 
     def _detect(self, x):
         if self.true_peak:
-            return true_peak(x)
+            h = getattr(self, "_tp_hist", None)
+            if h is None or h.shape[1] != x.shape[1]:
+                h = self._tp_hist = np.zeros((TP_HIST, x.shape[1]), np.float32)
+            return true_peak(x, h)
         return np.abs(x).max(axis=1)
 
     def process(self, x):
