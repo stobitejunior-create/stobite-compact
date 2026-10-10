@@ -137,23 +137,24 @@
     if (!S.tr.playing && !S.tr.recording) return S.tr.playhead;
     return phV + (performance.now() - phT) / 1000 * sr();
   }
+  on('theme', () => draw());
   function draw() {
     g.clearRect(0, 0, W, H);
-    g.fillStyle = '#0e0f11'; g.fillRect(0, 0, W, H);
+    g.fillStyle = CV.bg; g.fillRect(0, 0, W, H);
     const sel = T.range;
     // rows
     const r0 = Math.max(0, rowAt(RULER)), r1 = Math.min(vis.length - 1, rowAt(H));
     for (let r = r0; r <= r1; r++) {
       const y = yOfRow(r);
-      g.fillStyle = r % 2 ? '#111316' : '#0f1113'; g.fillRect(0, y, W, T.th);
-      g.fillStyle = '#1b1e22'; g.fillRect(0, y + T.th - 1, W, 1);
+      g.fillStyle = r % 2 ? CV.row1 : CV.row2; g.fillRect(0, y, W, T.th);
+      g.fillStyle = CV.sep; g.fillRect(0, y + T.th - 1, W, 1);
     }
     // grid lines (seconds)
     const secPx = sr() / T.spp;
     const steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1800, 3600];
     const step = steps.find(s => s * secPx >= 90) || 3600;
     const firstSec = Math.floor(T.x0 / sr() / step) * step;
-    g.fillStyle = '#16191c';
+    g.fillStyle = CV.tick;
     for (let s = firstSec; ; s += step) { const x = xOf(s * sr()); if (x > W) break; if (x >= 0) g.fillRect(Math.round(x), RULER, 1, H); }
     // range
     if (sel) {
@@ -171,7 +172,7 @@
       if (x > W || x + w < 0) continue;
       const y = yOfRow(r) + 1, hh = T.th - 3;
       const col = chan(gm.track).color, selected = T.sel.has(c.id);
-      g.fillStyle = c.mute ? '#1c1d20' : hexA(col, selected ? 0.42 : 0.24); g.fillRect(x, y, w, hh);
+      g.fillStyle = c.mute ? CV.muted : hexA(col, selected ? 0.42 : 0.24); g.fillRect(x, y, w, hh);
       g.fillStyle = hexA(col, selected ? 1 : 0.75); g.fillRect(x, y, w, Math.min(13, hh / 3));
       // waveform
       const pk = getPeaks(c.file, level);
@@ -180,7 +181,7 @@
         const fileOff = T.drag?.type === 'trimL' && T.drag.ids.includes(c.id) ? c.offset + (gm.start - c.start) : c.offset;
         const top = y + 13, wh = hh - 14, mid = top + wh / 2, gain = Math.pow(10, (c.gain || 0) / 20);
         const xs = Math.max(0, Math.floor(x)), xe = Math.min(W, Math.ceil(x + w));
-        g.fillStyle = c.mute ? '#444' : (selected ? '#fff' : '#d9dce0');
+        g.fillStyle = c.mute ? CV.label : (selected ? CV.waveSel : CV.wave);
         for (let px = xs; px < xe; px++) {
           const a = fileOff + (px - x) * T.spp, b = a + T.spp;
           let i0 = Math.floor(a / level), i1 = Math.max(i0 + 1, Math.floor(b / level));
@@ -203,7 +204,7 @@
       }
       // name + border
       if (w > 30) { g.fillStyle = '#000'; g.font = '600 10.5px system-ui'; g.save(); g.beginPath(); g.rect(x, y, w, 13); g.clip(); g.fillText((c.gain ? `${c.name}  ${c.gain > 0 ? '+' : ''}${c.gain.toFixed(1)}dB` : c.name), Math.max(x, 0) + 4, y + 10); g.restore(); }
-      g.strokeStyle = selected ? '#fff' : hexA(col, 0.9); g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
+      g.strokeStyle = selected ? CV.waveSel : hexA(col, 0.9); g.lineWidth = 1; g.strokeRect(x + 0.5, y + 0.5, w - 1, hh - 1);
       if (selected && w > 24) { g.fillStyle = '#ffd23f'; g.fillRect(x + gm.fin / T.spp - 3, y + 13, 6, 6); g.fillRect(x + w - gm.fout / T.spp - 3, y + 13, 6, 6); }
     }
     // live recording blocks
@@ -218,8 +219,8 @@
     }
     if (T.autoView) drawAutomation(r0, r1);
     // ruler
-    g.fillStyle = '#15171a'; g.fillRect(0, 0, W, RULER); g.fillStyle = '#2c3036'; g.fillRect(0, RULER - 1, W, 1);
-    g.fillStyle = '#9aa0a8'; g.font = '10.5px ui-monospace, Menlo, monospace';
+    g.fillStyle = CV.ruler; g.fillRect(0, 0, W, RULER); g.fillStyle = CV.ruleLine; g.fillRect(0, RULER - 1, W, 1);
+    g.fillStyle = CV.text; g.font = '10.5px ui-monospace, Menlo, monospace';
     for (let s = firstSec; ; s += step) {
       const x = xOf(s * sr()); if (x > W) break;
       if (x < -60) continue;
@@ -282,7 +283,7 @@
     for (let r = r0; r <= r1; r++) {
       const t = vis[r], pts = lanePoints(t);
       const y0 = yOfRow(r);
-      g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(0, y0, W, T.th - 1);
+      g.fillStyle = CV.lane; g.fillRect(0, y0, W, T.th - 1);
       if (!pts || !pts.length) {
         g.setLineDash([4, 4]); g.strokeStyle = 'rgba(154,160,168,.6)'; g.lineWidth = 1;
         const y = laneY(r, toN(curValue(t))); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.setLineDash([]);

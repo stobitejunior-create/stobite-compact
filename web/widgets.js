@@ -253,10 +253,10 @@ function drawEqCurve(canvas, strip, fs, opts = {}) {
   const fx = f => Math.log(f / 20) / Math.log(1000) * W;
   const gy = d => H / 2 - d / range * (H / 2 - 4);
   if (opts.grid) {
-    g.strokeStyle = '#1f2328'; g.lineWidth = 1; g.fillStyle = '#4b515a'; g.font = '10px system-ui';
+    g.strokeStyle = CV.grid; g.lineWidth = 1; g.fillStyle = CV.label; g.font = '10px system-ui';
     for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { const x = Math.round(fx(f)) + .5; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.fillText(fmt.hz(f), x + 2, H - 3); }
     for (const d of [-12, -6, 6, 12]) { const y = Math.round(gy(d)) + .5; g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.fillText((d > 0 ? '+' : '') + d, 2, y - 2); }
-    g.strokeStyle = '#2c3036'; g.beginPath(); g.moveTo(0, Math.round(gy(0)) + .5); g.lineTo(W, Math.round(gy(0)) + .5); g.stroke();
+    g.strokeStyle = CV.ruleLine; g.beginPath(); g.moveTo(0, Math.round(gy(0)) + .5); g.lineTo(W, Math.round(gy(0)) + .5); g.stroke();
   }
   if (opts.spectrum) {  // live analyser behind the curve
     const sp = opts.spectrum, n = sp.length;
@@ -279,7 +279,7 @@ function drawEqCurve(canvas, strip, fs, opts = {}) {
       g.fillStyle = b.on === false ? '#444' : BAND_COLORS[i]; g.fill();
       g.fillStyle = '#000'; g.font = 'bold 10px system-ui'; g.textAlign = 'center'; g.fillText(i + 1, x, y + 3.5); g.textAlign = 'start';
     });
-    if (strip.hpf?.on) { const x = fx(strip.hpf.freq); g.fillStyle = '#ccc'; g.beginPath(); g.arc(x, gy(-3), 5, 0, Math.PI * 2); g.fill(); }
+    if (strip.hpf?.on) { const x = fx(strip.hpf.freq); g.fillStyle = CV.text; g.beginPath(); g.arc(x, gy(-3), 5, 0, Math.PI * 2); g.fill(); }
   }
   return { fx, gy, W, H, range };
 }

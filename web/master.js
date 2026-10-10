@@ -106,14 +106,14 @@
     const c = specCanvas, g = c.getContext('2d'), d = devicePixelRatio || 1, W = c.width / d, H = c.height / d;
     g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, W, H);
     const yOf = db => clamp((1 - (db + 90) / 90) * H, 0, H);
-    g.strokeStyle = '#1b1e22'; g.fillStyle = '#4b515a'; g.font = '10px system-ui';
+    g.strokeStyle = CV.sep; g.fillStyle = CV.label; g.font = '10px system-ui';
     for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000]) { const x = Math.log(f / 20) / Math.log(1000) * W; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.fillText(fmt.hz(f), x + 3, H - 4); }
     for (const db of [-12, -24, -36, -48, -60, -72]) { const y = yOf(db); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.fillText(db, 3, y - 2); }
     const n = spec.length, bw = W / n;
     const grad = g.createLinearGradient(0, 0, 0, H); grad.addColorStop(0, '#ffb366'); grad.addColorStop(0.5, '#f76b15'); grad.addColorStop(1, 'rgba(247,107,21,.15)');
     g.fillStyle = grad;
     for (let i = 0; i < n; i++) { const y = yOf(spec[i]); g.fillRect(i * bw + 1, y, bw - 2, H - y); }
-    g.fillStyle = '#e8e9eb';
+    g.fillStyle = CV.wave;
     for (let i = 0; i < n; i++) g.fillRect(i * bw + 1, yOf(specHold[i]) - 1, bw - 2, 2);
     // master EQ curve overlay
     const secs = stripSections(chainEqView(M()), S.info?.sr || 48000);
@@ -129,7 +129,7 @@
     const c = histCanvas, g = c.getContext('2d'), d = devicePixelRatio || 1, W = c.width / d, H = c.height / d;
     g.setTransform(d, 0, 0, d, 0, 0); g.clearRect(0, 0, W, H);
     const lo = -40, hi = -4, yOf = v => H - (clamp(v, lo, hi) - lo) / (hi - lo) * H;
-    g.fillStyle = '#4b515a'; g.font = '10px system-ui'; g.strokeStyle = '#1b1e22';
+    g.fillStyle = CV.label; g.font = '10px system-ui'; g.strokeStyle = CV.sep;
     for (const v of [-35, -28, -21, -14, -7]) { const y = yOf(v); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); g.fillText(v, 3, y - 2); }
     const ty = yOf(M().target);
     g.fillStyle = 'rgba(62,207,110,.08)'; g.fillRect(0, yOf(M().target + 1), W, yOf(M().target - 1) - yOf(M().target + 1));

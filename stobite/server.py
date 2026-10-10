@@ -281,7 +281,7 @@ class App:
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
-                          "wing_return", "listen", "stream_out"):
+                          "wing_return", "listen", "stream_out", "theme"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()

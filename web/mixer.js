@@ -745,7 +745,7 @@
         const c = getPath(S.mixer, M()), dpr = devicePixelRatio || 1, W = 100, H = 100;
         if (!c) return;
         cg.width = W * dpr; cg.height = H * dpr; const g = cg.getContext('2d'); g.scale(dpr, dpr);
-        g.strokeStyle = '#1f2328'; for (let d = -60; d <= 0; d += 12) { const p = (d + 60) / 60 * W; g.beginPath(); g.moveTo(p, 0); g.lineTo(p, H); g.moveTo(0, H - p); g.lineTo(W, H - p); g.stroke(); }
+        g.strokeStyle = CV.grid; for (let d = -60; d <= 0; d += 12) { const p = (d + 60) / 60 * W; g.beginPath(); g.moveTo(p, 0); g.lineTo(p, H); g.moveTo(0, H - p); g.lineTo(W, H - p); g.stroke(); }
         g.beginPath();
         for (let x = 0; x <= W; x++) {
           const inp = -60 + x / W * 60, over = inp - c.thr, k = Math.max(c.knee, 0.01), sl = 1 - 1 / c.ratio;

@@ -33,7 +33,8 @@ DEFAULT_CFG = {
     # into channels that also go back out over USB, which makes a screaming feedback loop.
     "wing_return": False,
     "listen": "auto",                       # where to hear the mix when the WING is the interface
-    "stream_out": "",                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
+    "stream_out": "",
+    "theme": "auto",                        # Auto (follow the computer) / light / dark                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
 }
 
 

@@ -57,6 +57,24 @@ function setParam(path, v) {
   emit('set', path);
 }
 
+// ---- theme: Auto (follow the computer) / Light / Dark. Canvases read their colours from CSS.
+window.CV = {};
+const CV_KEYS = { bg: 'bg', row1: 'row1', row2: 'row2', sep: 'sep', grid: 'grid', ruler: 'ruler', ruleLine: 'rule-line', text: 'text',
+  label: 'label', wave: 'wave', waveSel: 'wave-sel', muted: 'muted', tick: 'tick', lane: 'lane' };
+function readCV() { const cs = getComputedStyle(document.documentElement); for (const [k, v] of Object.entries(CV_KEYS)) CV[k] = cs.getPropertyValue('--cv-' + v).trim(); }
+window.applyTheme = (t) => {
+  const root = document.documentElement;
+  if (t === 'light' || t === 'dark') root.dataset.theme = t; else delete root.dataset.theme;
+  try { localStorage.setItem('stobite.theme', t || 'auto'); } catch (e) { /* storage off */ }
+  readCV();
+  const dark = getComputedStyle(root).colorScheme.includes('dark');
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#0e0f11' : '#f3f4f6');
+  emit('theme');
+};
+on('theme', () => { if (S.mixer) emit('mixer'); });   // strips redraw their EQ thumbnails
+try { applyTheme(localStorage.getItem('stobite.theme') || 'auto'); } catch (e) { applyTheme('auto'); }
+matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme(document.documentElement.dataset.theme || 'auto'));
+
 // A–Z with numbers in order ("USB 2" before "USB 10"); the first `pinned` entries (None, Auto…) stay on top.
 const abc = (a, b) => String(a).replace(/^[^\p{L}\p{N}]+/u, '').localeCompare(String(b).replace(/^[^\p{L}\p{N}]+/u, ''), undefined, { numeric: true, sensitivity: 'base' });
 window.sortOpts = (opts, pinned = 0) => [...opts.slice(0, pinned), ...opts.slice(pinned).sort((x, y) => abc(x[1], y[1]))];
@@ -163,6 +181,8 @@ on('meters', m => {
 });
 on('info', () => {
   const i = S.info;
+  const want = i.cfg.theme || 'auto';
+  if (want !== (document.documentElement.dataset.theme || 'auto')) applyTheme(want);
   $('#tabWing').hidden = !i.cfg.show_wing;
   if (!i.cfg.show_wing && S.view === 'console') showView('mixer');
   $('#audioDot').className = 'dot ' + (i.status === 'running' ? 'ok' : i.status === 'starting' ? 'wait' : 'bad');
