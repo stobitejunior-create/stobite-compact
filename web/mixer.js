@@ -431,7 +431,7 @@
     const lib = await api('settings-library');
     const tplList = h('div', { class: 'tpl-list' });
     api('templates').then(list => list.forEach(t => tplList.append(h('div', { class: 'tpl', onclick: () => { close(); applyTemplate(t.id); } },
-      h('div', { class: 'tpl-ic' }, icon('sparkle', 18)),
+      h('div', { class: 'tpl-ic' }, icon('mixer', 18)),
       h('div', { class: 'tpl-txt' }, h('b', {}, t.name), h('small', {}, t.style), h('p', {}, t.about)),
       h('button', { class: 'btn accent' }, 'Apply…'))))).catch(() => {});
     const name = h('input', { placeholder: 'Name, e.g. "Sunday mix – home"', value: (S.session?.name || 'Mix') + ' mix', style: 'flex:1' });
@@ -692,7 +692,7 @@
     chain.forEach((m, i) => sections.push({ id: m.id, mod: m, i, label: m.type === 'plugin' ? (m.name || 'Plug-in') : modInfo(m.type).label,
       build: () => [modulePanel(t, kind, m, i, P, K, T, S_, help, live, fns)] }));
     if (kind === 'bus') sections.push({ id: 'duck', label: 'Ducking', ic: 'route', build: () => [duckPanel()] });
-    if (kind !== 'master') sections.push({ id: 'sends', label: kind === 'ch' ? 'Sends & fader' : 'Sends', ic: 'fx', build: () => [sendsPanel()] });
+    if (kind !== 'master') sections.push({ id: 'sends', label: kind === 'ch' ? 'Sends & fader' : 'Sends', ic: 'send', build: () => [sendsPanel()] });
 
     // ---- left: the signal chain, top to bottom
     const nav = h('nav', { class: 'ed-nav' });

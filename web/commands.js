@@ -40,7 +40,7 @@
     ['countIn', 'Transport', 'Count-in', { k: 'k', shift: 1 }, () => toggleCfg('countin', 'Count-in')],
     ['tempo', 'Transport', 'Tempo & time signature…', null, () => tempoDialog()],
     ['tuner', 'Transport', 'Tuner…', { k: 'u', mod: 1 }, () => openTuner()],
-    ['masterAssist', 'Mix', 'Mastering assistant…', null, () => masterAssistant()],
+    ['masterAssist', 'Mix', 'Master to target…', null, () => masterAssistant()],
     ['clearSolos', 'Mix', 'Clear all solos', { k: 's', alt: 1, shift: 1 }, () => clearSolos()],
     ['clearMutes', 'Mix', 'Clear all mutes', { k: 'm', alt: 1, shift: 1 }, () => clearMutes()],
     ['compare', 'View', 'Compare before / after', { k: '\\' }, () => setCompare(!S.compare)],
@@ -201,7 +201,7 @@
     start();
   });
 
-  // ---- mastering assistant
+  // ---- master to target: analyse the project and set the master chain
   window.masterAssistant = () => modal((card, close) => {
     card.classList.add('wide');
     let target = -14, style = 'balanced';
@@ -212,8 +212,8 @@
     const bar = h('div', { class: 'progress' }, h('i'));
     const stage = h('p', { class: 'hint' });
     const out = h('div');
-    const go = h('button', { class: 'btn accent' }, icon('sparkle', 14), 'Analyse & master');
-    card.append(h('h3', {}, 'Mastering assistant'),
+    const go = h('button', { class: 'btn accent' }, 'Analyse & set master');
+    card.append(h('h3', {}, 'Master to target'),
       h('p', { class: 'hint' }, 'Listens to the busiest parts of this project, then sets the master: corrective EQ, glue compression, gentle multiband, width and a true-peak limiter, landing on your loudness target. One undo puts it back.'),
       h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Target'), h('small', {}, 'Where it will be heard')), tsel),
       h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Character')), seg),

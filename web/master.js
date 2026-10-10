@@ -21,7 +21,7 @@
     box.append(h('div', { class: 'card lu-card' },
       h('div', { class: 'card-head' }, h('h3', {}, 'Loudness'), h('span', { class: 'grow' }), target,
         h('button', { class: 'btn', onclick: () => { api('loudness-reset', {}); hist.length = 0; toast('Loudness measurement reset'); } }, 'Reset'),
-        h('button', { class: 'btn accent', onclick: () => masterAssistant() }, icon('sparkle', 14), 'Mastering assistant')),
+        h('button', { class: 'btn accent', onclick: () => masterAssistant() }, 'Master to target…')),
       h('div', { class: 'lu-row' },
         h('div', { class: 'lu' }, h('span', {}, 'Momentary'), els.mom, h('small', {}, 'LUFS · 0.4 s')),
         h('div', { class: 'lu' }, h('span', {}, 'Short-term'), els.short, h('small', {}, 'LUFS · 3 s')),
@@ -75,7 +75,7 @@
       h('div', { class: 'stage' }, h('div', { class: 'stage-h' }, h('b', {}, '→'), 'Output'), h('div', { class: 'knobs' }, K(['master', 'fader'], { label: 'Output', min: -30, max: 12, def: 0, format: fmt.db, size: 38, big: true })),
         h('button', { class: 'btn', onclick: () => openEditor('master') }, 'Reorder / add…')));
     box.append(h('div', { class: 'card chain-card' }, h('div', { class: 'card-head' }, h('h3', {}, 'Mastering chain'), h('span', { class: 'grow' }),
-      h('button', { class: 'btn', onclick: autoMaster, title: 'Sets gentle glue, ceiling and output gain toward the target from what is playing now' }, '✦ Auto-level to target'),
+      h('button', { class: 'btn', onclick: autoMaster, title: 'Sets gentle glue, ceiling and output gain toward the target from what is playing now' }, 'Level to target (live)'),
       h('button', { class: 'btn accent', onclick: () => openExport(undefined, undefined, M().target) }, 'Export mastered mix…')), chain));
     built = true;
     requestAnimationFrame(() => { sizeCanvases(); drawEqCurve(eqThumb, chainEqView(M()), S.info?.sr || 48000); mL.size(); mR.size(); });

@@ -127,7 +127,7 @@ MENUS = [
               ("Snap to Grid", "snap", "g", "cmd"), ("Bars & Beats Ruler", "beats", "", ""), ("Follow Playhead    F", "follow", "", ""), None,
               ("Enter Full Screen", "#toggleFullScreen:", "f", "cmd+ctrl")]),
     ("Mix", [("Clear All Solos", "clearSolos", "s", "alt+shift"), ("Clear All Mutes", "clearMutes", "m", "alt+shift"), None,
-             ("Mastering Assistant…", "masterAssist", "", ""),
+             ("Master to Target…", "masterAssist", "", ""),
              ("Mix Settings & Templates…", "mixSettings", "", "")]),
     ("Window", [("Minimize", "#performMiniaturize:", "m", "cmd"), ("Zoom", "#performZoom:", "", "")]),
     ("Help", [("Keyboard Shortcuts", "shortcuts", "/", "cmd"), ("Help & Guides", "help", "", "")]),
