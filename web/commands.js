@@ -39,6 +39,8 @@
     ['metronome', 'Transport', 'Metronome', { k: 'k' }, () => toggleCfg('metronome', 'Metronome')],
     ['countIn', 'Transport', 'Count-in', { k: 'k', shift: 1 }, () => toggleCfg('countin', 'Count-in')],
     ['tempo', 'Transport', 'Tempo & time signature…', null, () => tempoDialog()],
+    ['clearSolos', 'Mix', 'Clear all solos', { k: 's', alt: 1, shift: 1 }, () => clearSolos()],
+    ['clearMutes', 'Mix', 'Clear all mutes', { k: 'm', alt: 1, shift: 1 }, () => clearMutes()],
     ['compare', 'View', 'Compare before / after', { k: '\\' }, () => setCompare(!S.compare)],
     // View
     ['viewEdit', 'View', 'Edit', { k: '1', mod: 1 }, () => showView('edit')],
@@ -88,7 +90,9 @@
     if (!$('#modal').hidden || document.querySelector('.ctx')) return;
     const mod = MAC ? e.metaKey : e.ctrlKey, ctrl = MAC ? e.ctrlKey : false;
     const k = e.key === ' ' ? ' ' : e.key.length === 1 ? e.key.toLowerCase() : e.key.toLowerCase();
-    const keyOf = { '+': '=', '_': '-', '?': '/' }[k] || k;
+    // with Option held a Mac types a different character (⌥S = ß), so use the physical key
+    const phys = e.altKey && /^Key[A-Z]$/.test(e.code || '') ? e.code.slice(3).toLowerCase() : k;
+    const keyOf = { '+': '=', '_': '-', '?': '/' }[phys] || phys;
     for (const c of Object.values(CMD)) {
       const kk = c.key; if (!kk) continue;
       if (kk.k !== keyOf && !(kk.k === 'backspace' && keyOf === 'delete')) continue;

@@ -100,6 +100,8 @@
       <button class="btn" id="btnMixSettings" data-ic="export" title="Save this whole mix as files, or apply a mix you saved (e.g. made at home)">Mix settings</button>
       <span class="grow"></span>
       <span class="hint" id="soloHint"></span>
+      <button class="btn clr solo" id="btnClearSolo" hidden title="Turn every solo off">Clear solos</button>
+      <button class="btn clr mute" id="btnClearMute" hidden title="Unmute every channel, bus and effect return">Clear mutes</button>
       <label class="chk"><input type="checkbox" id="showSends" checked> Sends</label>
     </div>
     <div class="mixer">
@@ -144,17 +146,18 @@
 </main>
 
 <!-- channel editor -->
+<div class="ed-back" id="edBack" hidden></div>
 <div class="sheet" id="editor" hidden>
   <div class="sheet-head">
-    <button class="btn icon" id="edPrev" title="Previous channel">‹</button>
+    <button class="btn icon" id="edPrev" title="Previous channel (←)">‹</button>
     <input class="ed-name" id="edName">
-    <button class="btn icon" id="edNext" title="Next channel">›</button>
+    <button class="btn icon" id="edNext" title="Next channel (→)">›</button>
     <span class="grow"></span>
     <button class="btn byp" id="edBypass" title="Hear this without any of its processing">Bypass</button>
     <button class="btn" id="edCopy">Copy</button>
     <button class="btn" id="edPaste">Paste</button>
     <button class="btn" id="edReset">Reset</button>
-    <button class="btn icon" id="edClose">✕</button>
+    <button class="btn icon" id="edClose" title="Close (Esc)">✕</button>
   </div>
   <div class="sheet-body" id="edBody"></div>
 </div>

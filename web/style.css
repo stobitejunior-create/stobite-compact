@@ -662,3 +662,51 @@ body.comparing #top { box-shadow: inset 0 -2px 0 var(--yellow); }
 .strip.bypassed .badges, .strip.bypassed .eqthumb { opacity: .35; }
 .strip.bypassed .sname { outline: 2px dashed var(--yellow); outline-offset: -2px; }
 .btn.byp.on { background: var(--yellow); color: #000; border-color: var(--yellow); }
+
+.btn.clr { font-size: 12px; padding: 4px 10px; }
+.btn.clr.solo { background: var(--solo); color: #000; border-color: var(--solo); }
+.btn.clr.mute { background: var(--red-bg); color: var(--red-text); border-color: var(--red-line); }
+
+/* ---- channel editor: a window over a dimmed page, chain on the left, the selected part on the right */
+.ed-back { position: fixed; inset: 0; z-index: 19; background: #0008; backdrop-filter: blur(2px); animation: fadeIn .18s var(--ease); }
+:root[data-theme="light"] .ed-back { background: #0004; }
+.ed-back[hidden] { display: none; }
+.sheet { top: 50%; transform: translate(-50%, -50%); height: min(780px, calc(100vh - 60px)); max-height: none; width: min(1120px, calc(100vw - 32px)); }
+.sheet:not([hidden]) { animation: edIn .26s var(--spring); }
+@keyframes edIn { from { opacity: 0; transform: translate(-50%, -48%) scale(.98); } }
+.sheet-head { padding: 10px 12px; gap: 8px; }
+.sheet-head .btn.icon { width: 32px; height: 30px; font-size: 18px; }
+.sheet-body.ed2 { display: grid; grid-template-columns: 250px 1fr; gap: 0; padding: 0; overflow: hidden; flex: 1; min-height: 0; }
+.ed-nav { overflow: auto; padding: 12px 10px; border-right: 1px solid var(--line); background: var(--bg2); display: flex; flex-direction: column; gap: 3px; }
+.ed-navh { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin: 0 6px 6px; }
+.ed-row { display: flex; align-items: center; gap: 8px; padding: 8px 9px; border-radius: 9px; border: 1px solid transparent; cursor: pointer; color: var(--dim);
+  transition: background .15s var(--ease), border-color .15s var(--ease), color .15s var(--ease); background: var(--bg3); }
+.ed-row:hover { color: var(--text); border-color: var(--line2); }
+.ed-row.on { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 1px var(--accent) inset; }
+.ed-row.off .ed-lbl { opacity: .45; text-decoration: line-through; }
+.ed-row.dropto { border-color: var(--blue); }
+.ed-row.dragging { opacity: .4; }
+.ed-num { font-family: var(--mono); font-size: 10.5px; color: var(--faint); width: 14px; text-align: right; }
+.ed-lbl { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.ed-meter { width: 26px; height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; display: flex; justify-content: flex-end; }
+.ed-meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .1s linear; }
+.ed-pow { border: 0; background: none; color: var(--faint); font-size: 13px; padding: 0 2px; cursor: pointer; }
+.ed-pow.on { color: var(--green); }
+.ed-wire { width: 2px; height: 8px; background: var(--line2); margin: 0 auto; }
+.ed-gap { height: 10px; }
+.ed-add { margin-top: 6px; padding: 8px; border-radius: 9px; border: 1px dashed var(--line2); background: none; color: var(--accent); font-weight: 600; cursor: pointer; }
+.ed-add:hover { border-color: var(--accent); background: var(--accent-bg); }
+.ed-pane { overflow: auto; padding: 16px 18px 40px; display: flex; flex-direction: column; gap: 12px; }
+.ed-pane > .panel { animation: rise .22s var(--ease) both; padding: 14px; }
+.ed-pane .panel h4 { font-size: 13px; }
+.ed-pane .panel.module { grid-column: auto; }
+.ed-pane .eqgraph { height: 280px; }
+.ed-pane .knobs { gap: 16px; justify-content: flex-start; }
+.modacts { display: inline-flex; gap: 3px; margin-left: 4px; }
+.flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+@media (max-width: 760px) {
+  .sheet { top: 0; left: 0; transform: none; width: 100vw; height: 100%; border-radius: 0; }
+  .sheet-body.ed2 { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+  .ed-nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); }
+  .ed-row { flex: none; } .ed-wire, .ed-gap, .ed-navh { display: none; }
+}

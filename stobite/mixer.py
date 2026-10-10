@@ -18,6 +18,7 @@ import numpy as np
 
 from . import dsp
 from . import chain
+from . import effects
 from .inputs import parse_dev
 from .procs import Ducker, ReverbFX, StereoDelay
 
@@ -424,6 +425,7 @@ class Mixer:
 
     def _compile(self):
         st = self.state
+        effects.tempo_fn = lambda: float(self.state.get("tempo") or 120)   # synced delays / tremolos
         chs, buses = st["channels"], st["buses"]
         dests = ["master"] + [b["id"] for b in buses]
         di = {d: i for i, d in enumerate(dests)}

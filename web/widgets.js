@@ -14,6 +14,13 @@ const h = (tag, attrs = {}, ...kids) => {
   return el;
 };
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+// The mouse wheel only changes a control after you've clicked it (until the pointer leaves it),
+// or while Alt / Option is held. Otherwise it scrolls the page, so a setting can't change by accident.
+function wheelGuard(el) {
+  el.addEventListener('pointerdown', () => el.classList.add('wheel-armed'));
+  el.addEventListener('pointerleave', () => el.classList.remove('wheel-armed'));
+  return e => el.classList.contains('wheel-armed') || e.altKey;
+}
 
 const fmt = {
   db: v => v <= -89.9 ? '-∞' : (v > 0 ? '+' : '') + v.toFixed(1),
@@ -107,7 +114,8 @@ function Knob({ label = '', min = 0, max = 1, value = 0, def, log = false, step 
     move: (e, dx, dy, n0) => set(fromN(n0 - dy / (e.shiftKey ? 600 : 160)), true),
   });
   el.addEventListener('dblclick', () => set(def, true));
-  el.addEventListener('wheel', e => { e.preventDefault(); set(fromN(toN(cur) - Math.sign(e.deltaY) / (e.shiftKey ? 400 : 60)), true); }, { passive: false });
+  const kArmed = wheelGuard(el);
+  el.addEventListener('wheel', e => { if (!kArmed(e)) return; e.preventDefault(); set(fromN(toN(cur) - Math.sign(e.deltaY) / (e.shiftKey ? 400 : 60)), true); }, { passive: false });
   draw();
   let busy = false;
   el.addEventListener('pointerdown', () => busy = true);
@@ -137,7 +145,8 @@ function Fader({ value = 0, height = 180, onChange }) {
     move: (e, dx, dy, c) => set(posToDb(c.p - dy / c.hgt * (e.shiftKey ? 0.2 : 1)), true),
   });
   el.addEventListener('dblclick', () => set(0, true));
-  el.addEventListener('wheel', e => { e.preventDefault(); set(posToDb(dbToPos(cur) - Math.sign(e.deltaY) * 0.01), true); }, { passive: false });
+  const fArmed = wheelGuard(el);
+  el.addEventListener('wheel', e => { if (!fArmed(e)) return; e.preventDefault(); set(posToDb(dbToPos(cur) - Math.sign(e.deltaY) * 0.01), true); }, { passive: false });
   place();
   let dragging = false;
   el.addEventListener('pointerdown', () => { dragging = true; el.classList.add('drag'); });

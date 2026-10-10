@@ -240,6 +240,9 @@ document.addEventListener('keydown', e => {
   else emit('key', e);
 });
 
+// Scrolling over a focused number box must not change it (Windows/Chrome does that)
+document.addEventListener('wheel', e => { if (e.target.matches?.('input[type=number]') && document.activeElement === e.target) e.target.blur(); }, { passive: true });
+
 // Buttons shouldn't keep focus, or Space would click them as well as toggling play.
 document.addEventListener('click', e => { const b = e.target.closest('button'); if (b) b.blur(); });
 

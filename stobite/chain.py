@@ -20,6 +20,7 @@ import numpy as np
 from .dsp import (SUB, BW4_Q, DeEsser, Dynamics, FilterBank, _db, _tc, biquad, sosfilt_fast, strip_sos)
 from .procs import (DynEQ, LookaheadLimiter, Multiband, Saturator, Transient, _shape, width_balance)
 from .autotune import AutoTune
+from .effects import Effect
 
 # type -> (label, short label, allowed on channels, allowed on buses/master)
 TYPES = {
@@ -34,8 +35,20 @@ TYPES = {
     "mbc": ("Multiband compressor", "MB", False, True),
     "width": ("Width & balance", "WIDE", False, True),
     "limiter": ("Limiter", "LIM", False, True),
+    "reverb": ("Reverb", "VERB", True, True),
+    "delay": ("Delay / echo", "DLY", True, True),
+    "chorus": ("Chorus", "CHOR", True, True),
+    "flanger": ("Flanger", "FLNG", True, True),
+    "phaser": ("Phaser", "PHAS", True, True),
+    "tremolo": ("Tremolo / auto-pan", "TREM", True, True),
+    "autofilter": ("Auto filter", "FILT", True, True),
+    "distortion": ("Distortion / overdrive", "DIST", True, True),
+    "bitcrush": ("Bitcrusher", "BIT", True, True),
+    "pitch": ("Pitch shifter", "PITCH", True, True),
+    "gain": ("Gain / utility", "GAIN", True, True),
     "plugin": ("Plug-in", "PLUG", True, True),
 }
+EFFECTS = ("reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 
 def new_id():
@@ -70,6 +83,17 @@ DEFAULTS = {
     "width": lambda: {"width": 100.0, "balance": 0.0},
     "limiter": lambda: {"ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
     "plugin": lambda: {"path": "", "name": "Plug-in", "params": {}},
+    "reverb": lambda: {"size": 60, "damping": 50, "width": 100, "mix": 25},
+    "delay": lambda: {"sync": True, "note": "1/4", "time": 375, "feedback": 30, "lowcut": 200, "highcut": 6000, "mix": 20},
+    "chorus": lambda: {"rate": 0.8, "depth": 30, "delay": 7.0, "feedback": 0, "mix": 50},
+    "flanger": lambda: {"rate": 0.25, "depth": 60, "delay": 1.5, "feedback": 50, "mix": 50},
+    "phaser": lambda: {"rate": 0.5, "depth": 50, "centre": 1300, "feedback": 30, "mix": 50},
+    "tremolo": lambda: {"rate": 4.0, "sync": False, "note": "1/8", "depth": 50, "shape": "sine", "pan": False},
+    "autofilter": lambda: {"mode": "lowpass", "cutoff": 1000, "resonance": 30, "rate": 0.5, "depth": 2.0, "mix": 100},
+    "distortion": lambda: {"flavor": "overdrive", "drive": 12, "tone": 6000, "output": -6, "mix": 100},
+    "bitcrush": lambda: {"bits": 8, "downsample": 1, "mix": 100},
+    "pitch": lambda: {"semitones": 12, "mix": 50},
+    "gain": lambda: {"gain": 0, "invert": False, "mono": False},
 }
 
 
@@ -377,6 +401,10 @@ class ChannelChains:
             o = cur if isinstance(cur, AutoTune) else AutoTune(self.fs)
             o.set_params(m, self.song)
             return o
+        if t in EFFECTS:
+            o = cur if isinstance(cur, Effect) and cur.kind == t else Effect(t, self.fs, 1)
+            o.set(m)
+            return o
         if t == "plugin":
             return self.load_plugin(m)
         return None
@@ -514,6 +542,10 @@ class BusChain:
             p = cur if isinstance(cur, LookaheadLimiter) else LookaheadLimiter(fs)
             p.set_params(on)
             return p
+        if t in EFFECTS:
+            p = cur if isinstance(cur, Effect) and cur.kind == t else Effect(t, fs, 2)
+            p.set(m)
+            return p
         if t == "plugin":
             return self.load_plugin(m)
         return None
@@ -529,6 +561,8 @@ class BusChain:
                 p.process(x, det)
             elif t == "width" or t == "limiter":
                 p.process(x)
+            elif t in EFFECTS:
+                x[:] = p.process(x, self.fs)
             elif t == "plugin":
                 if not p.failed:
                     x[:] = p.process(x, self.fs)
