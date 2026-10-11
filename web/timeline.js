@@ -863,6 +863,14 @@
   window.openExport = function (start, end, target) {
     modal(async (card, close) => {
       const pref = loadPrefs();
+      // ---- what part of the service: everything, the time selection, selected clips, the loop, a section, or typed times
+      let rs = start ?? null, re = end ?? null;
+      const rangeSel = h('select');
+      const tIn = v => h('input', { value: v, placeholder: 'm:ss', style: 'width:84px' });
+      const fromIn = tIn(''), toIn = tIn('');
+      const customBox = h('span', { class: 'rng-custom' }, fromIn, ' → ', toIn);
+      const toSamples = txt => { const p = String(txt).trim().split(':').map(Number); if (p.some(isNaN) || !p.length) return null; return Math.round(p.reduce((a, b) => a * 60 + b, 0) * sr()); };
+      const fromS = v => { const t = Math.max(0, v / sr()); const hh = Math.floor(t / 3600), mm = Math.floor(t / 60) % 60, ss = (t % 60).toFixed(1); return (hh ? hh + ':' + String(mm).padStart(2, '0') : mm) + ':' + ss.padStart(4, '0'); };
       const sel = (opts, val) => h('select', {}, ...opts.map(([v, l]) => h('option', { value: v, selected: String(v) === String(val) }, l)));
       const kind = sel([['mix', 'Stereo mix (with all mixer effects)'], ['sections', 'Each section as its own file (songs, sermon…)'],
         ['podcast', 'Sermon podcast (MP3 with title and speaker)'], ['tracks', 'Separate tracks: open in Logic / Pro Tools / Cubase'],
@@ -875,6 +883,31 @@
         ...[[-14, 'Streaming / YouTube / livestream (−14 LUFS)'], [-16, 'Apple Music / podcasts (−16 LUFS)'], [-18, 'Gentle / dynamic (−18 LUFS)'], [-23, 'Broadcast EBU R128 (−23 LUFS)']]
           .map(([v, l]) => h('option', { value: v, selected: target === v }, l)));
       const row = (label, el) => h('div', { class: 'f' }, h('span', {}, label), el);
+      const tailCb = h('input', { type: 'checkbox', checked: true });
+      const tailBox = h('label', { class: 'chk', title: 'Lets reverb and delays ring out after the end. Turn off for a loop that repeats seamlessly.' }, tailCb, 'Let reverb ring out (+2 s)');
+      const rangeRow = h('div', { class: 'f' }, h('span', {}, 'Range'), h('div', { class: 'rng' }, rangeSel, customBox, tailBox));
+      // where the file goes: remembered; the system folder picker on this computer, a typed path elsewhere
+      const folderTxt = h('span', { class: 'fold-path' }, '…');
+      const folderDef = h('button', { class: 'btn', onclick: () => setFolder('') }, 'Use default');
+      const setFolder = async path => {
+        try { S.info = await api('config', { export_dir: path }); emit('info'); } catch (e) { return toast(e.message, true); }
+        await loadEst(); paintFolder(); update(false);
+        toast(path ? 'Exports go to ' + path : 'Exports go to the Stobite Compact Exports folder');
+      };
+      const chooseFolder = async () => {
+        const r = await api('pick-folder', { start: est?.folder || '' }).catch(() => ({ native: false }));
+        if (r.native) { if (r.path) setFolder(r.path); return; }
+        const typed = prompt('Folder to save exports in (full path on the computer running Stobite Compact):', est?.folder || '');
+        if (typed) setFolder(typed.trim());
+      };
+      const paintFolder = () => {
+        const p = est?.folder || '';
+        const parts = p.split(/[\\/]/).filter(Boolean);
+        folderTxt.textContent = est?.default ? 'Exports (Stobite Compact folder)' : (parts.length > 2 ? '…/' + parts.slice(-2).join('/') : p);
+        folderTxt.title = p;
+        folderDef.style.display = est?.default ? 'none' : '';
+      };
+      const folderRow = h('div', { class: 'f' }, h('span', {}, 'Save to'), h('div', { class: 'rng' }, folderTxt, h('button', { class: 'btn', onclick: chooseFolder }, 'Change…'), folderDef));
       const fRow = row('Format', f), depthRow = row('Bit depth', depth), rateRow = row('Bitrate', rate), chRow = row('Channels', chans), loudRow = row('Loudness', loud);
       const sizeNum = h('div', { class: 'xsize-num' }, '…'), sizeSub = h('div', { class: 'xsize-sub' }), sizeNote = h('div', { class: 'xsize-note' });
       const sizeBox = h('div', { class: 'xsize' }, h('div', { class: 'xsize-l' }, 'Estimated file size'), sizeNum, sizeSub, sizeNote);
@@ -896,13 +929,44 @@
       if (soloed.length) soloNote.append(`${soloed.join(', ')} ${soloed.length > 1 ? 'are' : 'is'} soloed, so the export would only contain ${soloed.length > 1 ? 'them' : 'it'}. `,
         h('button', { class: 'btn', onclick: () => { clearSolos(); soloNote.remove(); } }, 'Clear solos'));
       card.append(h('h3', {}, 'Export'),
-        h('p', { class: 'hint' }, start != null ? `Range ${tc(start)} → ${tc(end)}` : 'Whole session (all clips, with edits applied).'),
-        h('div', { class: 'card' }, row('What', kind), fRow, depthRow, rateRow, chRow, loudRow), podBox, soloNote,
+        h('div', { class: 'card' }, row('What', kind), rangeRow, folderRow, fRow, depthRow, rateRow, chRow, loudRow), podBox, soloNote,
         sizeBox, prog, out, h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), go));
 
       let est = null, secs = [];
-      try { est = await api('export-estimate', undefined, `?start=${start ?? ''}&end=${end ?? ''}`); } catch (e) { /* preview only */ }
+      const loadEst = async () => { try { est = await api('export-estimate', undefined, `?start=${rs ?? ''}&end=${re ?? ''}`); } catch (e) { /* preview only */ } };
       try { secs = await api('sections'); } catch (e) { /* none */ }
+      // the range choices that make sense right now
+      const opts = [];
+      if (start != null && end > start) opts.push(['given', `This range · ${fromS(start)} → ${fromS(end)}`, start, end]);
+      if (T.range && T.range.e !== T.range.s) { const a = Math.min(T.range.s, T.range.e), b = Math.max(T.range.s, T.range.e); opts.push(['sel', `Time selection · ${fromS(a)} → ${fromS(b)}`, a, b]); }
+      const sc = selClips();
+      if (sc.length) { const a = Math.min(...sc.map(c => c.start)), b = Math.max(...sc.map(c => c.start + c.length)); opts.push(['clips', `Selected clip${sc.length > 1 ? 's' : ''} · ${fromS(a)} → ${fromS(b)}`, a, b]); }
+      const lp = S.session?.loop;
+      if (lp && lp.end - lp.start > sr() * 0.1) opts.push(['loop', `Loop region · ${fromS(lp.start)} → ${fromS(lp.end)}`, lp.start, lp.end]);
+      opts.push(['all', 'The whole service', null, null]);
+      secs.forEach((x, i) => opts.push(['sec' + i, `${x.name} · ${fromS(x.start)} → ${fromS(x.end)}`, x.start, x.end]));
+      opts.push(['custom', 'Type the times…', null, null]);
+      opts.forEach(([v, l]) => rangeSel.append(h('option', { value: v }, l)));
+      rangeSel.value = opts[0][0];   // the most specific thing selected (or everything)
+      const pickRange = async () => {
+        const o = opts.find(x => x[0] === rangeSel.value);
+        customBox.style.display = rangeSel.value === 'custom' ? '' : 'none';
+        if (rangeSel.value === 'custom') {
+          if (!fromIn.value) { fromIn.value = fromS(rs ?? 0); toIn.value = fromS(re ?? (S.session?.length || 0)); }
+          const a = toSamples(fromIn.value), b = toSamples(toIn.value);
+          [rs, re] = a != null && b != null && b > a ? [a, b] : [null, null];
+        } else [rs, re] = [o[2], o[3]];
+        tailCb.checked = rangeSel.value !== 'loop';      // a loop file should repeat without a gap
+        await loadEst(); update(false);
+      };
+      rangeSel.onchange = pickRange;
+      fromIn.onchange = toIn.onchange = pickRange;
+      customBox.style.display = 'none';
+      [rs, re] = [opts[0][2], opts[0][3]];
+      tailCb.checked = opts[0][0] !== 'loop';
+      tailCb.onchange = () => update(false);
+      await loadEst();
+      paintFolder();
       // podcast part: the selected range, a section (the sermon first), or everything
       if (start != null) pRange.append(h('option', { value: `${start}:${end}` }, `Selected range ${tc(start)} → ${tc(end)}`));
       [...secs].sort((a, b) => (b.name.toLowerCase().includes('sermon') ? 1 : 0) - (a.name.toLowerCase().includes('sermon') ? 1 : 0))
@@ -937,6 +1001,7 @@
         const isPod = k === 'podcast', isSec = k === 'sections';
         const isMix = k === 'mix' || isSec, isProj = k === 'project';
         podBox.style.display = isPod ? '' : 'none';
+        rangeRow.style.display = isPod || isSec || isProj ? 'none' : '';
         if (F.depths) { const cur = F.depths.includes(depth.value) ? depth.value : F.depths.includes(pref.depth) ? pref.depth : '24'; fill(depth, F.depths.map(d => [d, DEPTH_LABEL[d]]), cur); }
         if (F.rates) { const cur = F.rates.includes(+rate.value) ? rate.value : F.rates.includes(+pref.kbps) ? pref.kbps : F.def; fill(rate, F.rates.map(r => [r, `${r} kbps · ${RATE_HINT[r]}`]), cur); }
         fRow.style.display = isProj || isPod ? 'none' : '';
@@ -965,7 +1030,7 @@
           sub = 'Every recording, as it is now, plus the mix';
           note = 'Exact: it is a copy of the project folder.';
         } else {
-          const sec = isSec ? secs.reduce((t, x) => t + (x.end - x.start) / sr + est.tail, 0) : est.seconds + (isMix ? est.tail : 0);
+          const sec = isSec ? secs.reduce((t, x) => t + (x.end - x.start) / sr + est.tail, 0) : est.seconds + (isMix && tailCb.checked ? est.tail : 0);
           const nch = isMix ? +chans.value : 1, files = isMix ? 1 : est.tracks;
           const what = isSec ? `${secs.length} file${secs.length === 1 ? '' : 's'} (${secs.map(x => x.name).slice(0, 4).join(', ')}${secs.length > 4 ? '…' : ''})` : isMix ? (nch === 1 ? 'mono' : 'stereo') : `${files} mono track${files === 1 ? '' : 's'}`;
           if (F.lossy) {
@@ -1003,7 +1068,7 @@
             await api('export', { kind: 'podcast', start: a, end: b, target: -16, kbps: +pRate.value,
               extra: { speechOnly: pSpeech.checked, mono: true, tags: { title: pTitle.value, artist: pSpeaker.value, album: pChurch.value, year: String(new Date().getFullYear()) } } });
           }
-          else await api('export', { kind: kind.value, fmt: f.value, depth: depth.value, kbps: +rate.value || null, channels: +chans.value, start, end,
+          else await api('export', { kind: kind.value, fmt: f.value, depth: depth.value, kbps: +rate.value || null, channels: +chans.value, start: rs, end: re, extra: { tail: tailCb.checked },
             target: loud.value === '' || kind.value === 'tracks' ? null : +loud.value });
         }
         catch (e) { out.innerHTML = ''; out.append(h('p', { class: 'err' }, e.message)); go.disabled = false; return; }

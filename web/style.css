@@ -755,3 +755,7 @@ body.locked .view.on::before { content: "Mix locked for the service"; position: 
 .al-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-size: 12.5px; }
 .al-row b { min-width: 150px; } .al-row span:not(.hint) { flex: 1; } .al-row.weak { opacity: .6; }
 .al-row input:not([type=checkbox]) { flex: 1; }
+
+.rng { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; min-width: 0; } .rng select { flex: 1; min-width: 0; }
+.rng-custom { display: inline-flex; gap: 4px; align-items: center; color: var(--dim); }
+.fold-path { flex: 1; min-width: 0; font-family: var(--mono); font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

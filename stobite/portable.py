@@ -165,10 +165,10 @@ def store_upload(rel_name, raw):
 
 # ---------------------------------------------------------------- projects
 
-def export_project(session, mixer_state, progress=lambda f: None):
-    """Zip the session folder (recordings, edits, mix) into Exports/<name>.stobite."""
+def export_project(session, mixer_state, progress=lambda f: None, outdir=None):
+    """Zip the session folder (recordings, edits, mix) into the export folder as <name>.stobite."""
     session.save(mixer_state)
-    out = os.path.join(home_dir(), "Exports", f"{session.name}{PROJ_EXT}")
+    out = os.path.join(outdir or os.path.join(home_dir(), "Exports"), f"{session.name}{PROJ_EXT}")
     files = []
     for root, _, names in os.walk(session.dir):
         for n in names:

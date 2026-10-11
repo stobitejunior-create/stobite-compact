@@ -30,6 +30,7 @@ DEFAULT_CFG = {
     "mon_l": -1, "mon_r": -1,              # optional separate monitor (headphone) outputs
     "cable_out": None, "cable_in": None,    # system loopback device(s) for the virtual cables
     "show_wing": False,
+    "export_dir": "",                       # empty = Stobite Compact/Exports
     # Safety: never send audio back into the WING unless asked. Its USB returns are often patched
     # into channels that also go back out over USB, which makes a screaming feedback loop.
     "wing_return": False,
@@ -1083,6 +1084,15 @@ class Engine:
             return "aiff", {"format": "AIFF", "subtype": pcm.get(depth, "PCM_24")}
         return "wav", {"format": "WAV", "subtype": pcm.get(depth, "PCM_24")}
 
+    def export_dir(self):
+        """Where exports go: the folder chosen in the Export window, or Stobite Compact/Exports."""
+        d = self.cfg.get("export_dir") or ""
+        if d and os.path.isdir(d) and os.access(d, os.W_OK):
+            return d
+        out = os.path.join(home_dir(), "Exports")
+        os.makedirs(out, exist_ok=True)
+        return out
+
     def export_estimate(self, start=None, end=None):
         """What the export window needs to predict file sizes."""
         s = self.session
@@ -1098,9 +1108,8 @@ class Engine:
                         proj += os.path.getsize(os.path.join(root, n))
                     except OSError:
                         pass
-        outdir = os.path.join(home_dir(), "Exports")
-        os.makedirs(outdir, exist_ok=True)
-        return {"seconds": max(end - start, 0) / s.sr, "tail": 2.0, "sr": s.sr, "tracks": tracks,
+        outdir = self.export_dir()
+        return {"folder": outdir, "default": outdir == os.path.join(home_dir(), "Exports"), "seconds": max(end - start, 0) / s.sr, "tail": 2.0, "sr": s.sr, "tracks": tracks,
                 "projectBytes": proj, "freeBytes": shutil.disk_usage(outdir).free}
 
     def export(self, kind="mix", fmt="wav", start=None, end=None, target=None, depth="24", kbps=None, channels=2, extra=None):
@@ -1126,7 +1135,7 @@ class Engine:
         s = self.session
         try:
             stamp = time.strftime("%Y%m%d-%H%M%S")
-            outdir = os.path.join(home_dir(), "Exports")
+            outdir = self.export_dir()
             reader = Reader(s)
             with s.lock:
                 clips = [dict(c) for c in s.clips]
@@ -1240,7 +1249,7 @@ class Engine:
                     ext, kw = self.out_format(fmt, opts.get("depth", "24"), opts.get("kbps"), nout)
                     label = "for video" if kind == "video" else "mix"
                     path = os.path.join(outdir, f"{s.name} {label} {stamp}.{ext}")
-                    job["lufs"] = mix_file(path, start, end, 0.0, 1.0, nout, kw, target, with_tail=(kind != "video"))
+                    job["lufs"] = mix_file(path, start, end, 0.0, 1.0, nout, kw, target, with_tail=(kind != "video" and opts.get("tail", True)))
                     job["file"], job["bytes"] = path, os.path.getsize(path)
             reader.close()
         except Exception as ex:

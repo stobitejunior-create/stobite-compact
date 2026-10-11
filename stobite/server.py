@@ -315,7 +315,17 @@ class App:
                 return web.json_response(list_devices())
             if name == "info":
                 return web.json_response(self.info())
+            if name == "pick-folder":
+                # the computer's own folder picker (only for this computer, not phones)
+                if request.remote not in ("127.0.0.1", "::1") or not getattr(self, "pick_folder", None):
+                    return web.json_response({"path": None, "native": False})
+                start = body.get("start") or e.export_dir()
+                path = await asyncio.get_running_loop().run_in_executor(None, self.pick_folder, start)
+                return web.json_response({"path": path, "native": True})
             if name == "config":
+                d = body.get("export_dir")
+                if d and not (os.path.isdir(d) and os.access(d, os.W_OK)):
+                    raise RuntimeError("Can't save there: that folder doesn't exist or isn't writable.")
                 restart = any(k in body for k in ("input", "output", "sr", "block"))
                 restart_cables = any(k in body for k in ("cable_out", "cable_in"))
                 if "remote" in body:
@@ -323,7 +333,7 @@ class App:
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
-                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db", "rec_at_end"):
+                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db", "rec_at_end", "export_dir"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
@@ -529,7 +539,7 @@ class App:
 
                 def run_export():
                     try:
-                        job["file"] = portable.export_project(e.session, e.mixer.snapshot(), lambda f: job.__setitem__("progress", f))
+                        job["file"] = portable.export_project(e.session, e.mixer.snapshot(), lambda f: job.__setitem__("progress", f), e.export_dir())
                     except Exception as ex:
                         traceback.print_exc()
                         job["error"] = str(ex)
@@ -670,7 +680,8 @@ class App:
                 return web.json_response({"ok": True})
             if name == "download":
                 path = os.path.realpath(q["file"])
-                if not path.startswith(os.path.realpath(os.path.join(home_dir(), "Exports"))) or not os.path.isfile(path):
+                allowed = [os.path.realpath(os.path.join(home_dir(), "Exports")), os.path.realpath(e.export_dir())]
+                if not any(path.startswith(a + os.sep) for a in allowed) or not os.path.isfile(path):
                     raise web.HTTPForbidden()
                 return web.FileResponse(path, headers={
                     "Content-Disposition": f'attachment; filename="{os.path.basename(path)}"'})

@@ -236,6 +236,18 @@ def main():
             window = webview.create_window("Stobite Compact", url, width=1440, height=900, min_size=(900, 600),
                                            background_color="#0e0f11", text_select=False)
             holder["window"] = window
+
+            def pick_folder(start=""):
+                """The system's folder picker, for choosing where exports go."""
+                try:
+                    res = window.create_file_dialog(webview.FileDialog.FOLDER, directory=start or "")
+                except Exception as ex:
+                    print("Folder picker:", ex, flush=True)
+                    return None
+                return (res[0] if isinstance(res, (list, tuple)) else res) if res else None
+            ready.wait(5)
+            if holder.get("app") is not None:
+                holder["app"]["stobite"].pick_folder = pick_folder
             if sys.platform == "darwin":
                 mac_window_behaviour(window, holder)
             webview.start(menu=build_menu(holder))
