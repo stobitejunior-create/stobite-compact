@@ -6,7 +6,7 @@
 #   update compact --minor "Big update" # v1.1.x -> v1.2.0
 #
 # It checks the code, commits and pushes everything, tags the new version,
-# waits while GitHub builds the Mac DMG and the Windows installer, downloads
+# waits while GitHub builds the Mac DMGs (Apple silicon + Intel) and the Windows installer, downloads
 # both to ~/Downloads, and (optionally) installs the new Mac app.
 set -euo pipefail
 
@@ -82,8 +82,10 @@ for _ in $(seq 1 20); do
   sleep 5
 done
 ls "$dest"/*.dmg "$dest"/*Setup.exe >/dev/null 2>&1 || fail "Couldn't download the release files. They're on the GitHub Releases page."
-echo "   ✓ Mac:     $dest/$(cd "$dest" && ls *.dmg)"
-echo "   ✓ Windows: $dest/$(cd "$dest" && ls *Setup.exe)"
+for f in "$dest"/*.dmg; do
+  case "$f" in *Intel*) echo "   ✓ Mac (Intel):          $f" ;; *) echo "   ✓ Mac (Apple silicon):  $f" ;; esac
+done
+echo "   ✓ Windows:              $dest/$(cd "$dest" && ls *Setup.exe)"
 
 # ---- install on this Mac
 bold "6/6  Install"
@@ -91,7 +93,10 @@ read -r -p "   Install the new version into Applications on this Mac? [Y/n] " an
 if [[ ! "$ans" =~ ^[Nn] ]]; then
   osascript -e 'quit app "Stobite Compact"' >/dev/null 2>&1 || true
   sleep 1
-  mnt=$(hdiutil attach -nobrowse -readonly "$dest"/*.dmg | tail -1 | awk -F'\t' '{print $NF}')
+  # the build for this Mac's chip
+  if [[ "$(uname -m)" == "arm64" ]]; then mine=$(ls "$dest"/*Apple-Silicon*.dmg 2>/dev/null | head -1); else mine=$(ls "$dest"/*Intel*.dmg 2>/dev/null | head -1); fi
+  [[ -n "$mine" ]] || mine=$(ls "$dest"/*.dmg | head -1)
+  mnt=$(hdiutil attach -nobrowse -readonly "$mine" | tail -1 | awk -F'\t' '{print $NF}')
   rm -rf "/Applications/Stobite Compact.app"
   cp -R "$mnt/Stobite Compact.app" /Applications/
   hdiutil detach "$mnt" -quiet

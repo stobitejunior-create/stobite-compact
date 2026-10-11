@@ -1,4 +1,4 @@
-# Builds the Mac .dmg and the Windows installer .exe on GitHub's machines.
+# Builds the Mac .dmg files (Apple silicon and Intel) and the Windows installer .exe on GitHub's machines.
 # Runs when a version tag (v1.2.3) is pushed — e.g. by `update compact` — or by hand from the Actions tab,
 # and publishes both files as a GitHub Release.
 name: Build apps
@@ -15,7 +15,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-latest]
+        include:
+          - { os: macos-14, name: Mac-Apple-Silicon }       # M1 / M2 / M3 / M4 Macs
+          - { os: macos-15-intel, name: Mac-Intel }          # Intel Macs (GitHub's Intel macOS machines)
+          - { os: windows-latest, name: Windows }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -42,7 +45,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Stobite-Compact-${{ runner.os }}
+          name: Stobite-Compact-${{ matrix.name }}
           path: |
             dist/*.dmg
             dist/*Setup.exe
