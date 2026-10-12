@@ -63,37 +63,68 @@ def yin(frame, fs, fmin, fmax, threshold=0.15):
 
 
 class PitchShifter:
-    """Two read heads on a delay line, crossfaded with complementary windows."""
+    """Pitch shift by reading a delay line with two moving heads, crossfaded.
 
-    def __init__(self, fs, window_ms=30.0, base_ms=3.0):
+    Each head drifts through a window and jumps back by one window when it reaches the end, at a
+    moment its own fade weight is zero. The window is a whole number of the voice's periods
+    (pitch-synchronous), so the two heads read the same part of the waveform cycle: the crossfade
+    doesn't comb-filter or wobble the level, which is what made simpler shifters sound robotic."""
+
+    def __init__(self, fs, window_ms=24.0, base_ms=2.0):
         self.fs = fs
         self.size = 1 << 15
         self.buf = np.zeros(self.size, np.float32)
         self.w = 0
-        self.W = fs * window_ms / 1000
         self.base = fs * base_ms / 1000
-        self.phase = 0.0
+        self.Wdef = fs * window_ms / 1000
+        self.heads = [[self.base, self.Wdef], [self.base + self.Wdef / 2, self.Wdef]]   # [delay, window]
+        self.synced = False
 
-    def process(self, x, semitones):
+    def _window(self, period):
+        if not period:
+            return self.Wdef
+        k = max(1, int(round(0.012 * self.fs / period)))    # half a window = k whole periods (~12 ms)
+        return 2 * k * period
+
+    def process(self, x, semitones, period=None):
         n = len(x)
         size = self.size
-        idx = (self.w + np.arange(n)) % size
-        self.buf[idx] = x
-        r = 2.0 ** (semitones / 12.0)
-        # delay changes by (1 - r) samples per sample; phase wraps every W samples
-        ph = (self.phase + np.arange(1, n + 1) * (1.0 - r) / self.W) % 1.0
-        self.phase = float(ph[-1])
-        out = np.zeros(n, np.float32)
-        for off in (0.0, 0.5):
-            p = (ph + off) % 1.0
-            delay = self.base + p * self.W
-            pos = (self.w + np.arange(n)) - delay
+        ar = np.arange(n)
+        self.buf[(self.w + ar) % size] = x
+        rate = 1.0 - 2.0 ** (semitones / 12.0)            # how fast each head's delay changes per sample
+        wt = self._window(period)
+        if period and not self.synced:                    # first voice: space the heads exactly half a window apart
+            self.heads = [[self.base + 0.25 * wt, wt], [self.base + 0.75 * wt, wt]]
+            self.synced = True
+        out = np.zeros(n, np.float64)
+        wsum = np.zeros(n, np.float64)
+        pre = [hd[0] for hd in self.heads]
+        for i, hd in enumerate(self.heads):
+            d = hd[0] + rate * (ar + 1)
+            W = np.full(n, hd[1])
+            other = pre[1 - i] + rate * (ar + 1)              # where the other head is at each sample
+            j = (np.flatnonzero(d > self.base + hd[1]) if rate > 0 else np.flatnonzero(d < self.base) if rate < 0 else [])
+            if len(j):
+                j = int(j[0])
+                # jump while this head is silent, landing exactly half a window from the other head:
+                # the two then read the same point of the voice's cycle and crossfade cleanly
+                start = other[j] - wt / 2 if rate > 0 else other[j] + wt / 2
+                lo, hi = self.base, self.base + wt
+                start = min(max(start, lo), hi)
+                d[j:] = start + rate * (ar[j:] - j)
+                W[j:] = wt
+                hd[1] = wt
+            p = np.clip((d - self.base) / W, 0.0, 1.0)
+            wgt = np.sin(np.pi * p) ** 2
+            pos = (self.w + ar) - d
             i0 = np.floor(pos).astype(np.int64)
-            frac = (pos - i0).astype(np.float32)
-            s = self.buf[i0 % size] * (1 - frac) + self.buf[(i0 + 1) % size] * frac
-            out += s * (np.sin(np.pi * p) ** 2).astype(np.float32)
+            frac = pos - i0
+            s_ = self.buf[i0 % size] * (1 - frac) + self.buf[(i0 + 1) % size] * frac
+            out += s_ * wgt
+            wsum += wgt
+            hd[0] = float(d[-1])
         self.w = (self.w + n) % size
-        return out
+        return (out / np.maximum(wsum, 0.35)).astype(np.float32)
 
 
 class AutoTune:
@@ -109,6 +140,9 @@ class AutoTune:
         self.conf = 0.0
         self.count = 0
         self.p = {}
+        self.recent = []
+        self.centre = None
+        self.period = None
 
     def set_params(self, p, song):
         self.p = p
@@ -132,22 +166,50 @@ class AutoTune:
         n = len(x)
         self.hist = np.concatenate([self.hist[n:], x]) if n < self.DETECT else x[-self.DETECT:].copy()
         self.count += 1
+        p = self.p
         if self.count % 2 == 0:  # detect every other block (~100 Hz at 256 frames)
             f, conf = yin(self.hist.astype(np.float64), self.fs, self.fmin, self.fmax)
-            self.freq, self.conf = f, conf
+            dt = 2 * n / self.fs * 1000                      # ms since the last detection
             if f > 0 and conf > 0.5:
                 midi = 69 + 12 * math.log2(f / 440.0)
-                tgt = self._nearest(midi)
+                self.recent = (self.recent + [midi])[-3:]
+                midi = sorted(self.recent)[len(self.recent) // 2]   # median of 3: ignores single octave slips
+                self.freq, self.conf = 440.0 * 2 ** ((midi - 69) / 12), conf
+                hard = p.get("style", "natural") == "hard"
+                if hard:
+                    # hard tune: the note centre snaps fast (~35 ms). Chasing every wobble instantly
+                    # would arrive a little late and widen vibrato instead of flattening it.
+                    if self.centre is None or abs(midi - self.centre) > 0.8:
+                        self.centre = midi
+                    self.centre += (midi - self.centre) * (1 - math.exp(-dt / 35.0))
+                    centre = self.centre
+                else:
+                    # natural: follow where the note is centred (~150 ms), so vibrato and scoops stay
+                    if self.centre is None or abs(midi - self.centre) > 0.8:
+                        self.centre = midi                   # a new note: start from where they are
+                    self.centre += (midi - self.centre) * (1 - math.exp(-dt / 150.0))
+                    centre = self.centre
+                tgt = self._nearest(centre)
                 self.target = tgt
-                want = (tgt - midi) * (float(self.p.get("amount", 100)) / 100.0)
+                off = tgt - centre                           # semitones away from the note
+                tol = float(p.get("humanize", 12)) / 100.0   # leave notes already this close alone
+                if p.get("style", "natural") != "hard" and abs(off) < tol:
+                    off = 0.0
+                elif p.get("style", "natural") != "hard":
+                    off = off * min(1.0, (abs(off) - tol) / max(tol, 1e-3) + 0.5)   # ease in just past the tolerance
+                want = off * (float(p.get("amount", 100)) / 100.0)
+                self.period = self.fs / f
             else:
+                self.recent = []
+                self.centre = None
                 want = 0.0
-            speed = max(float(self.p.get("speed", 40)), 0.0)  # retune time in ms (0 = instant / robotic)
-            dt = 2 * n / self.fs * 1000
+                self.period = None
+                self.freq, self.conf = f, conf
+            speed = max(float(p.get("speed", 80)), 0.0)    # retune time in ms (0 = instant)
             k = 1.0 if speed < 1 else 1 - math.exp(-dt / speed)
             self.shift += (want - self.shift) * k
             self.shift = max(min(self.shift, 2.0), -2.0)
-        return self.shifter.process(x, self.shift)
+        return self.shifter.process(x, self.shift, getattr(self, "period", None))
 
     def readout(self):
         if self.freq <= 0 or self.conf <= 0.5:

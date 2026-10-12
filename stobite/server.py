@@ -213,7 +213,7 @@ class App:
     # Service lock: during a service nothing can change the mix or the edit by accident (from this
     # computer or a phone). Playing, stopping, recording and listening still work.
     LOCKED_WS = {"set", "edit", "undo", "redo", "mixundo", "mixredo", "wing"}
-    OPEN_WHEN_LOCKED = {"sections", "find-sections", "align", "video-align", "devices", "info", "projects", "peaks", "rec-peaks", "rec-check", "catalog", "templates", "template",
+    OPEN_WHEN_LOCKED = {"samples", "sections", "find-sections", "align", "video-align", "devices", "info", "projects", "peaks", "rec-peaks", "rec-check", "catalog", "templates", "template",
                         "settings-library", "mix-read", "plugin-params", "download", "reveal", "export", "export-estimate",
                         "save", "lock", "loudness-reset", "project-export"}
     locked = False
@@ -333,7 +333,7 @@ class App:
                     await self.set_remote(e.cfg["remote"])
                 for k in ("input", "output", "sr", "block", "main_l", "main_r", "direct_outs",
                           "direct_offset", "monitor_live", "pin", "mon_l", "mon_r", "cable_out", "cable_in", "show_wing",
-                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db", "rec_at_end", "export_dir"):
+                          "wing_return", "listen", "stream_out", "theme", "metronome", "countin", "click_db", "rec_at_end", "export_dir", "hp_model", "hp_amount", "hp_last"):
                     if k in body:
                         e.cfg[k] = body[k]
                 e.save_cfg()
@@ -385,6 +385,30 @@ class App:
                 job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"),
                                body.get("depth", "24"), body.get("kbps"), body.get("channels", 2), body.get("extra"))
                 return web.json_response(job)
+            if name == "samples":
+                from .effects import builtin_samples
+                sd = os.path.join(home_dir(), "Samples")
+                user = sorted((f for f in (os.listdir(sd) if os.path.isdir(sd) else [])
+                               if f.lower().endswith((".wav", ".aif", ".aiff", ".flac", ".mp3"))), key=str.lower)
+                return web.json_response({"builtin": [["builtin:" + k, v[0]] for k, v in builtin_samples(48000).items()],
+                                          "user": [["user:" + f, os.path.splitext(f)[0]] for f in user]})
+            if name == "sample-upload":
+                sd = os.path.join(home_dir(), "Samples")
+                os.makedirs(sd, exist_ok=True)
+                reader = await request.multipart()
+                got = None
+                async for part in reader:
+                    if part.filename:
+                        fn = os.path.basename(part.filename)
+                        if not fn.lower().endswith((".wav", ".aif", ".aiff", ".flac", ".mp3")):
+                            raise RuntimeError("Use a WAV, AIFF, FLAC or MP3 file.")
+                        with open(os.path.join(sd, fn), "wb") as f:
+                            while chunk := await part.read_chunk(1 << 20):
+                                f.write(chunk)
+                        got = "user:" + fn
+                from . import effects
+                effects._SAMPLE_CACHE.clear()
+                return web.json_response({"sample": got})
             if name == "find-sections":
                 from . import postservice
                 secs = await asyncio.get_running_loop().run_in_executor(None, postservice.find_sections, e.session, e.mixer.snapshot())

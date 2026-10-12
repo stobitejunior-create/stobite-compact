@@ -130,7 +130,7 @@ MENUS = [
               ("Snap to Grid", "snap", "g", "cmd"), ("Bars & Beats Ruler", "beats", "", ""), ("Follow Playhead    F", "follow", "", ""), None,
               ("Enter Full Screen", "#toggleFullScreen:", "f", "cmd+ctrl")]),
     ("Mix", [("Lock the Mix (Service Lock)", "lock", "l", "cmd+shift"), None, ("Clear All Solos", "clearSolos", "s", "alt+shift"), ("Clear All Mutes", "clearMutes", "m", "alt+shift"), None,
-             ("Master to Target…", "masterAssist", "", ""), ("Align Mics & Check Polarity…", "alignMics", "", ""),
+             ("Master to Target…", "masterAssist", "", ""), ("Align Mics & Check Polarity…", "alignMics", "", ""), ("Drum Triggers…", "drumTriggers", "", ""), None, ("Headphone Correction", "hpCorrect", "h", "alt+shift"),
              ("Mix Settings & Templates…", "mixSettings", "", "")]),
     ("Window", [("Minimize", "#performMiniaturize:", "m", "cmd"), ("Zoom", "#performZoom:", "", "")]),
     ("Help", [("Keyboard Shortcuts", "shortcuts", "/", "cmd"), ("Help & Guides", "help", "", "")]),

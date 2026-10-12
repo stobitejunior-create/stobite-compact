@@ -636,16 +636,30 @@
       { type: 'lowshelf', freq: 100, gain: 0, q: 0.7, on: true, slope: 12 }, { type: 'bell', freq: 400, gain: 0, q: 1, on: true, slope: 12 },
       { type: 'bell', freq: 2500, gain: 0, q: 1, on: true, slope: 12 }, { type: 'highshelf', freq: 8000, gain: 0, q: 0.7, on: true, slope: 12 }] }),
     gate: () => ({ thr: -50, range: 40, att: 1, rel: 120 }),
-    comp: () => ({ thr: -18, ratio: 3, knee: 6, att: 10, rel: 150, makeup: 0, mix: 100, range: 30, sc: '' }),
+    comp: () => ({ thr: -18, ratio: 3, knee: 6, att: 10, rel: 150, makeup: 0, mix: 100, range: 30, sc: '', model: 'clean' }),
     deess: () => ({ freq: 6500, thr: -28, range: 8 }),
     dyneq: () => ({ sc: '', bands: [{ on: true, type: 'bell', freq: 250, q: 1.2, gain: 0, thr: -24, range: -3, att: 10, rel: 150 },
       { on: false, type: 'bell', freq: 3500, q: 2, gain: 0, thr: -26, range: -3, att: 3, rel: 100 }] }),
     trans: () => ({ attack: 2, sustain: 0 }),
     sat: () => ({ flavor: 'tape', drive: 3, mix: 100 }),
-    tune: () => ({ amount: 100, speed: 40, voice: 'any', scale: 'song' }),
+    tune: () => ({ amount: 100, speed: 80, voice: 'any', scale: 'song', style: 'natural', humanize: 12 }),
     mbc: () => ({ x1: 180, x2: 3500, bands: [{ thr: -20, ratio: 2, att: 30, rel: 250, gain: 0, range: 3 }, { thr: -18, ratio: 1.5, att: 20, rel: 200, gain: 0, range: 2 }, { thr: -22, ratio: 2, att: 10, rel: 150, gain: 0, range: 3 }] }),
     width: () => ({ width: 100, balance: 0 }),
     limiter: () => ({ ceiling: -1, threshold: 0, gain: 0, lookahead: 1.5, release: 150, truepeak: true }),
+  };
+  // drum samples: the built-in kit plus anything loaded into the Samples folder
+  window.loadSamples = () => fetch('/api/samples').then(r => r.json()).then(l => (window.SAMPLES = l)).catch(() => null);
+  window.pickSample = done => {
+    const inp = h('input', { type: 'file', accept: '.wav,.aif,.aiff,.flac,.mp3,audio/*' });
+    inp.onchange = async () => {
+      const f = inp.files[0];
+      if (!f) return;
+      const fd = new FormData(); fd.append('file', f, f.name);
+      const r = await fetch('/api/sample-upload', { method: 'POST', body: fd }).then(r => r.json()).catch(() => null);
+      await loadSamples();
+      if (r?.sample) done(r.sample); else toast?.('That sample could not be loaded');
+    };
+    inp.click();
   };
   const defaultsFor = type => MOD_DEFAULTS[type] ? MOD_DEFAULTS[type]() : JSON.parse(JSON.stringify(CATALOG?.moduleDefaults?.[type] || {}));
   window.makeModule = (type, extra = {}) => ({ id: newModuleId(), type, on: true, ...defaultsFor(type), ...extra });
@@ -786,6 +800,7 @@
       pane.innerHTML = ''; live.mods = {}; live.duckBar = null; fns.redraws.length = 0;
       pane.append(...sec.build());
       pane.scrollTop = 0;
+      requestAnimationFrame(() => fns.redraws.forEach(f => f()));   // graphs need the pane laid out first
     };
     nav.append(h('div', { class: 'ed-navh' }, 'Signal chain'));
     for (const sec of sections) {
@@ -829,13 +844,20 @@
   };
 
   // the effect picker, grouped like Logic's plug-in menu
+  const COMP_MODELS = [
+    ['clean', 'Clean (VCA)', 'Transparent. Mix below 100% = parallel compression.'],
+    ['fet', 'Punchy (FET, 1176-style)', 'Fast and aggressive with grit: drums, rock vocals, bass. Try ratio 4–8, fast attack.'],
+    ['opto', 'Smooth (opto, LA-2A-style)', 'Slow and musical, release lengthens as it works: vocals, bass, keys. Ratio 3–4.'],
+    ['bus', 'Glue (bus, SSL-style)', 'Holds a group together: drum bus, band bus, master. Ratio 2–4, 2–4 dB of reduction.'],
+  ];
   const EFFECT_GROUPS = [
-    ['EQ & filter', ['eq', 'dyneq', 'proximity', 'autofilter']],
-    ['Dynamics', ['comp', 'gate', 'deess', 'trans', 'mbc', 'limiter']],
+    ['EQ & filter', ['eq', 'dyneq', 'proximity', 'bass', 'autofilter']],
+    ['Dynamics', ['comp', 'rider', 'gate', 'deess', 'trans', 'mbc', 'limiter']],
     ['Reverb & delay', ['reverb', 'delay']],
     ['Modulation', ['chorus', 'flanger', 'phaser', 'tremolo']],
     ['Pitch', ['tune', 'pitch']],
     ['Restoration', ['denoise']],
+    ['Drums', ['trigger']],
     ['Colour & distortion', ['sat', 'distortion', 'bitcrush']],
     ['Utility & stereo', ['gain', 'width']],
   ];
@@ -941,7 +963,8 @@
         K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 30 }),
         K(M('range'), { label: 'Max GR', min: 1, max: 40, def: 30, format: v => Math.round(v) + 'dB', size: 30 }))),
         kind !== 'ch' ? h('div', { class: 'f2' }, h('span', {}, 'Sidechain from'), S_(M('sc'), scOptions())) : null,
-        h('p', { class: 'hint' }, 'Mix below 100% = parallel compression. Two gentle compressors in a row often sound smoother than one hard one.'));
+        h('div', { class: 'f2' }, h('span', {}, 'Model'), S_(M('model'), COMP_MODELS.map(([v, l]) => [v, l]), { onchange: () => openEditor(t) })),
+        h('p', { class: 'hint' }, (COMP_MODELS.find(x => x[0] === (m.model || 'clean')) || COMP_MODELS[0])[2]));
     } else if (m.type === 'deess') {
       kids.push(h('div', { class: 'knobs' }, K(M('freq'), { label: 'Frequency', min: 3000, max: 12000, log: true, def: 6500, format: fmt.hz, size: 36, big: true }),
         K(M('thr'), { label: 'Threshold', min: -60, max: 0, def: -28, format: fmt.db, size: 36, big: true }),
@@ -981,13 +1004,17 @@
           S_(['song', 'key'], KEYS.map(k => [k, k])), S_(['song', 'scale'], [['major', 'Major'], ['minor', 'Minor'], ['harmonic minor', 'Harmonic minor'], ['pentatonic', 'Pentatonic']]))),
         h('div', { class: 'f2' }, h('span', {}, 'Notes'), S_(M('scale'), [['song', 'Song key'], ['chromatic', 'Any note']])),
         h('div', { class: 'f2' }, h('span', {}, 'Voice'), S_(M('voice'), [['any', 'Any'], ['soprano', 'Soprano'], ['alto', 'Alto'], ['tenor', 'Tenor'], ['baritone', 'Baritone / bass']])),
+        h('div', { class: 'f2' }, h('span', {}, 'Style'), S_(M('style'), [['natural', 'Natural: keeps vibrato and expression'], ['hard', 'Hard: the obvious tuned effect']], { onchange: () => openEditor(t) })),
         h('div', { class: 'knobs' },
-          K(M('speed'), { label: 'Retune speed', min: 0, max: 400, def: 40, format: v => v < 1 ? 'Robot' : Math.round(v) + 'ms', size: 38, big: true, color: '#b18cff' }),
-          K(M('amount'), { label: 'Amount', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#b18cff' })),
+          K(M('speed'), { label: 'Retune speed', min: 0, max: 400, def: 80, format: v => v < 1 ? 'Instant' : Math.round(v) + 'ms', size: 38, big: true, color: '#b18cff' }),
+          K(M('amount'), { label: 'Amount', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, big: true, color: '#b18cff' }),
+          m.style !== 'hard' ? K(M('humanize'), { label: 'Humanize', min: 0, max: 40, def: 12, format: v => '±' + Math.round(v) + '¢', size: 34, color: '#b18cff' }) : null),
         h('div', { class: 'quick' },
-          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 80); setParam(M('amount'), 60); openEditor(t); } }, 'Natural'),
-          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 30); setParam(M('amount'), 100); openEditor(t); } }, 'Polished'),
-          h('button', { class: 'mini', onclick: () => { setParam(M('speed'), 0); setParam(M('amount'), 100); openEditor(t); } }, 'Hard (effect)')));
+          h('button', { class: 'mini', onclick: () => { setParam(M('style'), 'natural'); setParam(M('speed'), 120); setParam(M('amount'), 80); setParam(M('humanize'), 18); openEditor(t); } }, 'Gentle'),
+          h('button', { class: 'mini', onclick: () => { setParam(M('style'), 'natural'); setParam(M('speed'), 80); setParam(M('amount'), 100); setParam(M('humanize'), 12); openEditor(t); } }, 'Natural'),
+          h('button', { class: 'mini', onclick: () => { setParam(M('style'), 'natural'); setParam(M('speed'), 40); setParam(M('amount'), 100); setParam(M('humanize'), 6); openEditor(t); } }, 'Polished'),
+          h('button', { class: 'mini', onclick: () => { setParam(M('style'), 'hard'); setParam(M('speed'), 0); setParam(M('amount'), 100); openEditor(t); } }, 'Hard (effect)')),
+        h('p', { class: 'hint' }, m.style === 'hard' ? 'Snaps straight to each note: the obvious effect.' : 'Natural moves the centre of each note onto pitch and leaves vibrato, slides and expression alone. Humanize leaves notes that are already this close untouched.'));
     } else if (m.type === 'mbc') {
       kids.push(h('div', { class: 'knobs' }, K(M('x1'), { label: 'Low/mid split', min: 60, max: 800, log: true, def: 180, format: fmt.hz, size: 34 }),
         K(M('x2'), { label: 'Mid/high split', min: 1000, max: 10000, log: true, def: 3500, format: fmt.hz, size: 34 })),
@@ -1025,6 +1052,43 @@
         K(M('sensitivity'), { label: 'Sensitivity', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 42, big: true }),
         K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 38, color: '#3aa0ff' })),
         h('p', { class: 'hint' }, 'Removes steady background noise (hiss, hum, air-con, buzz) and learns it by itself as it plays. Start around −12 dB; raise Sensitivity if noise is left between words, lower it if the voice sounds watery. Adds 8 ms of delay.'));
+    } else if (m.type === 'rider') {
+      kids.push(h('div', { class: 'knobs' },
+        K(M('target'), { label: 'Target', min: -40, max: -6, def: -20, format: fmt.db, size: 46, big: true }),
+        K(M('range'), { label: 'Range ±', min: 1, max: 18, def: 6, format: v => '±' + v.toFixed(0) + ' dB', size: 40, big: true }),
+        K(M('speed'), { label: 'Speed', min: 50, max: 2000, log: true, def: 300, format: fmt.ms, size: 36 }),
+        K(M('floor'), { label: 'Ignore below', min: -70, max: -20, def: -50, format: fmt.db, size: 36 })),
+        h('p', { class: 'hint' }, 'Rides the fader for you so every word sits at the same level. Put it before the compressor. Raise “Ignore below” if breaths get pulled up.'));
+    } else if (m.type === 'bass') {
+      kids.push(h('div', { class: 'knobs' },
+        K(M('amount'), { label: 'Harmonics', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 46, big: true }),
+        K(M('freq'), { label: 'Below', min: 40, max: 250, log: true, def: 90, format: fmt.hz, size: 40 }),
+        K(M('original'), { label: 'Original lows', min: -24, max: 0, def: 0, format: fmt.db, size: 40 }),
+        K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 100, format: v => Math.round(v) + '%', size: 36, color: '#3aa0ff' })),
+        h('p', { class: 'hint' }, 'Makes the bass heard on phones and laptops by adding its harmonics. Great on bass, kick and the livestream.'));
+    } else if (m.type === 'trigger') {
+      const lists = window.SAMPLES || { builtin: [[m.sample, m.sample]], user: [] };
+      if (!window.SAMPLES) loadSamples().then(() => openEditor(t));
+      const opts = none => [...(none ? [['', 'None']] : []), ...lists.builtin, ...lists.user];
+      const loadBtn = slot => h('button', { class: 'mini', onclick: () => pickSample(s => { setParam(M(slot), s); openEditor(t); }) }, 'Load sample…');
+      const flash = h('span', { class: 'trighit' });
+      live.mods[m.id] = { type: 'trigger', el: flash };
+      kids.push(
+        h('div', { class: 'frow' }, h('span', { class: 'lbl' }, 'Sample'), S_(M('sample'), opts(false)), loadBtn('sample'), flash),
+        h('div', { class: 'frow' }, h('span', { class: 'lbl' }, 'Layer'), S_(M('sample2'), opts(true)), loadBtn('sample2')),
+        h('div', { class: 'knobs' },
+          K(M('sensitivity'), { label: 'Sensitivity', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 44, big: true }),
+          K(M('mix'), { label: 'Mix', min: 0, max: 100, def: 50, format: v => Math.round(v) + '%', size: 44, big: true, color: '#3aa0ff' }),
+          K(M('dynamics'), { label: 'Dynamics', min: 0, max: 100, def: 70, format: v => Math.round(v) + '%', size: 36 }),
+          K(M('volume'), { label: 'Volume', min: -24, max: 12, def: 0, format: fmt.db, bipolar: true, size: 36 }),
+          K(M('tune'), { label: 'Tune', min: -12, max: 12, def: 0, format: v => (v > 0 ? '+' : '') + v.toFixed(1) + ' st', bipolar: true, size: 36 }),
+          m.sample2 ? K(M('volume2'), { label: 'Layer vol', min: -24, max: 6, def: -6, format: fmt.db, size: 36 }) : null),
+        h('div', { class: 'knobs' },
+          K(M('det_lo'), { label: 'Listen from', min: 20, max: 1000, log: true, def: 30, format: fmt.hz, size: 32 }),
+          K(M('det_hi'), { label: 'Listen to', min: 1000, max: 16000, log: true, def: 8000, format: fmt.hz, size: 32 }),
+          K(M('retrigger'), { label: 'Retrigger', min: 10, max: 250, log: true, def: 60, format: fmt.ms, size: 32 }),
+          K(M('reject'), { label: 'Ignore spill', min: 6, max: 30, def: 16, format: v => Math.round(v) + ' dB', size: 32 })),
+        h('p', { class: 'hint' }, 'Plays a sample on every hit. Too many hits: lower Sensitivity or raise Ignore spill. Missed soft hits: the opposite.'));
     } else if (m.type === 'reverb') {
       kids.push(h('div', { class: 'knobs' },
         K(M('size'), { label: 'Size', min: 0, max: 100, def: 60, format: v => Math.round(v) + '%', size: 46, big: true }),
@@ -1127,12 +1191,17 @@
       // the chain list: a small activity bar beside each processor
       for (const [mid, bar] of Object.entries(live.nav || {})) {
         const v = mods[mid];
-        const amt = typeof v === 'number' ? v : Array.isArray(v) ? Math.max(0, ...v.map(x => Math.abs(+x) || 0)) : 0;
+        const amt = typeof v === 'number' ? Math.abs(v) : Array.isArray(v) ? Math.max(0, ...v.map(x => Math.abs(+x) || 0)) : 0;
         bar.style.width = Math.min(100, amt * 8) + '%';
       }
       for (const [mid, ui] of Object.entries(live.mods || {})) {
         const v = mods[mid];
-        if (ui.type === 'tune') {
+        if (ui.type === 'trigger') {
+          ui.el.classList.toggle('on', (v || 0) > 3);
+        } else if (ui.type === 'rider') {
+          ui.el.textContent = typeof v === 'number' ? `riding ${v > 0 ? '+' : ''}${v.toFixed(1)} dB` : '';
+        } else if (ui.type === 'bass') {
+        } else if (ui.type === 'tune') {
           if (v) {
             ui.note.textContent = v.note;
             ui.needle.style.left = `calc(50% + ${clamp(v.cents, -50, 50)}%)`;

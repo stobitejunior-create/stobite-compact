@@ -45,6 +45,8 @@
     ['findSongs', 'File', 'Find songs & sermon…', null, () => findSongs()],
     ['videoAlign', 'File', 'Line up with a video…', null, () => videoAlign()],
     ['masterAssist', 'Mix', 'Master to target…', null, () => masterAssistant()],
+    ['drumTriggers', 'Mix', 'Drum triggers…', null, () => drumTriggers()],
+    ['hpCorrect', 'Mix', 'Headphone correction on / off', { k: 'h', alt: 1, shift: 1 }, () => toggleHp()],
     ['lock', 'Mix', 'Lock / unlock the mix (service lock)', { k: 'l', mod: 1, shift: 1 }, () => toggleLock()],
     ['clearSolos', 'Mix', 'Clear all solos', { k: 's', alt: 1, shift: 1 }, () => clearSolos()],
     ['clearMutes', 'Mix', 'Clear all mutes', { k: 'm', alt: 1, shift: 1 }, () => clearMutes()],
@@ -259,6 +261,66 @@
     S.info = await tryApi('config', { rec_at_end: !atEnd }); emit('info');
     toast(atEnd ? 'Recording starts at the playhead: record again over a part to make another take (right-click a clip → Takes)' : 'Recording starts after the last recording', false, 6000);
   };
+
+  // ---- headphone correction: on with the last model used, or off
+  window.toggleHp = async () => {
+    const c = S.info?.cfg || {};
+    if (!c.hp_model && !c.hp_last) {
+      showView('setup'); try { localStorage.setItem('stobite.setupTab', 'stream'); } catch (e) { } emit('info');
+      return toast('Pick your headphones under Listening');
+    }
+    S.info = await tryApi('config', { hp_model: c.hp_model ? '' : c.hp_last }); emit('info');
+    toast(c.hp_model ? 'Headphone correction off' : 'Headphone correction: ' + c.hp_last);
+  };
+
+  // ---- drum triggers for the whole kit: a sample on every kick, snare and tom hit
+  window.drumTriggers = () => modal(async (card, close) => {
+    card.classList.add('wide');
+    const lists = window.SAMPLES || await loadSamples() || { builtin: [], user: [] };
+    const all = [...lists.builtin, ...lists.user];
+    const kinds = { kick: 'kick', snare: 'snare', tom: 'tom' };
+    const guess = c => kinds[c.type] || (/kick|bd\b|bass ?drum/i.test(c.name) ? 'kick' : /snare|sd\b/i.test(c.name) ? 'snare' : /tom/i.test(c.name) ? 'tom' : null);
+    const drums = S.mixer.order.map(i => ({ i, c: S.mixer.channels[i], k: guess(S.mixer.channels[i]) })).filter(x => x.k);
+    if (!drums.length) {
+      card.append(h('h3', {}, 'Drum triggers'), h('p', { class: 'hint' }, 'No kick, snare or tom channels found. Set a channel’s instrument to Kick, Snare or Tom, or add a Drum trigger from its effects.'),
+        h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close')));
+      return;
+    }
+    const toms = ['tom-high', 'tom-mid', 'tom-floor'];
+    let ti = 0;
+    const DET = { kick: [30, 150], snare: [150, 8000], tom: [60, 1200] };
+    const rows = drums.map(({ i, c, k }) => {
+      const cur = (c.chain || []).find(m => m.type === 'trigger');
+      const def = k === 'kick' ? 'builtin:kick-punchy' : k === 'snare' ? 'builtin:snare-tight' : 'builtin:' + toms[Math.min(ti++, 2)];
+      const on = h('input', { type: 'checkbox', checked: !!cur && cur.on !== false });
+      const smp = h('select', {}, ...all.map(([v, l]) => h('option', { value: v, selected: v === (cur?.sample || def) }, l)));
+      const mix = h('input', { type: 'range', min: 0, max: 100, value: cur?.mix ?? 50 });
+      const pct = h('span', { class: 'hint' }, mix.value + '%');
+      mix.oninput = () => { pct.textContent = mix.value + '%'; };
+      return { i, k, cur, on, smp, mix, el: h('div', { class: 'al-row' }, on, h('b', {}, `${i + 1}: ${c.name}`), smp, h('span', { class: 'hint' }, 'Mix'), mix, pct) };
+    });
+    card.append(h('h3', {}, 'Drum triggers'),
+      h('p', { class: 'hint' }, 'Adds a sample to every hit. Fine-tune each one in its channel.'),
+      ...rows.map(r => r.el),
+      h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel'), h('button', { class: 'btn accent', onclick: () => {
+        let n = 0;
+        for (const r of rows) {
+          const chain = [...(S.mixer.channels[r.i].chain || [])];
+          const at = chain.findIndex(m => m.type === 'trigger');
+          if (!r.on.checked) {
+            if (at >= 0 && chain[at].on !== false) { chain[at] = { ...chain[at], on: false }; setParam(['channels', r.i, 'chain'], chain); }
+            continue;
+          }
+          const [lo, hi] = DET[r.k];
+          const set = { on: true, sample: r.smp.value, mix: +r.mix.value };
+          if (at >= 0) chain[at] = { ...chain[at], ...set };
+          else chain.unshift(makeModule('trigger', { ...set, det_lo: lo, det_hi: hi, sensitivity: r.k === 'tom' ? 40 : 50 }));
+          setParam(['channels', r.i, 'chain'], chain);
+          n++;
+        }
+        toast(n ? `Triggers on ${n} drum${n > 1 ? 's' : ''}` : 'Triggers off'); close();
+      } }, 'Apply')));
+  });
 
   // ---- mic alignment & polarity
   window.alignMics = () => modal((card, close) => {

@@ -204,6 +204,65 @@ def _tc(ms, fs):
     return np.exp(-SUB / (fs * np.maximum(ms, 0.05) / 1000.0))
 
 
+# Compressor models (character): how the level is heard, how the release behaves, and colour.
+#   clean: peak detector, fixed release, no colour
+#   fet:   "76"-style: fast peak detector, recovers quickly after big hits, gritty colour when pushed
+#   opto:  "2A"-style: RMS detector, slow 10 ms+ attack, release slows down the more it compresses, soft knee, warm colour
+#   bus:   console bus "glue": RMS detector, auto release (quick after transients, slow on sustained level)
+COMP_MODELS = {"clean": (False, 0.0, 0.0, 0.0, 0), "fet": (False, 0.0, 0.0, 0.08, 1),
+               "opto": (True, 10.0, 10.0, 0.05, 2), "bus": (True, 4.0, 0.0, 0.025, 3)}
+
+
+def comp_model_arrays(models):
+    """Per-unit arrays (rms, knee_min, att_min_ms, colour, release mode) for a list of model names."""
+    rows = [COMP_MODELS.get(m or "clean", COMP_MODELS["clean"]) for m in models]
+    return tuple(np.array(c) for c in zip(*rows)) if rows else tuple(np.zeros(0) for _ in range(5))
+
+
+def comp_levels(x, nsub, rms, ms, fs):
+    """Detector level per gain step: peak, or RMS over ~10 ms (+3 dB so a sine reads the same)
+    where `rms`. `ms` is the running mean-square per unit (updated in place)."""
+    seg = x[: nsub * SUB].reshape(nsub, SUB, -1)
+    pk = _db(np.abs(seg).max(axis=1))
+    if not rms.any():
+        return pk
+    sq = (seg.astype(np.float64) ** 2).mean(axis=1)
+    a = math.exp(-SUB / (fs * 0.010))
+    r = np.empty_like(sq)
+    for k in range(nsub):
+        ms[:] = a * ms + (1 - a) * sq[k]
+        r[k] = ms
+    return np.where(rms, 10 * np.log10(np.maximum(r, 1e-12)) + 3.0, pk)
+
+
+def comp_smooth(target, state, att, rel, mode):
+    """Like Dynamics._smooth, with a release that depends on the model."""
+    if not mode.any():
+        return Dynamics._smooth(target, state, att, rel)
+    out = np.empty_like(target)
+    for k in range(target.shape[0]):
+        t = target[k]
+        drop = state - t
+        f = np.where(mode == 2, np.clip(0.6 + state / 5, 0.6, 3.0),            # opto: slower after heavy compression
+            np.where(mode == 3, np.where(drop > 3, 0.35, 1.6),                 # bus: fast after a hit, slow on held level
+            np.where(mode == 1, np.where(drop > 6, 0.6, 1.0), 1.0)))           # fet: quick bounce back after big peaks
+        coef = np.where(t > state, att, rel ** (1 / f))
+        state = t + coef * (state - t)
+        out[k] = state
+    return out, state
+
+
+def comp_colour(x, colour, gr, thr):
+    """Gentle saturation, relative to the threshold (as if the unit were driven), growing with
+    gain reduction: the model's colour."""
+    if not colour.any():
+        return
+    cols = np.flatnonzero(colour > 0)
+    ref = np.maximum(10 ** (np.asarray(thr)[cols] / 20), 0.02)
+    d = (colour[cols] * (1 + np.asarray(gr)[cols] / 6) / ref).astype(np.float32)
+    x[:, cols] = np.tanh(x[:, cols] * d) / d
+
+
 class Dynamics:
     """Compressor + gate + limiter for N channels, sharing one vectorised
     envelope engine. Parameters are arrays of length N; disabled units use
@@ -228,6 +287,7 @@ class Dynamics:
             c_knee=np.maximum(g("comp", "knee", 6), 0.01), c_att=_tc(g("comp", "att", 10), fs),
             c_rel=_tc(g("comp", "rel", 150), fs), c_make=10 ** (g("comp", "makeup", 0) / 20),
             c_mix=np.clip(g("comp", "mix", 100) / 100, 0, 1), c_range=np.abs(g("comp", "range", 60)),
+            c_model=comp_model_arrays([s.get("comp", {}).get("model") for s in strips]),
             g_on=on("gate"), g_thr=g("gate", "thr", -50), g_range=np.abs(g("gate", "range", 40)),
             g_att=_tc(g("gate", "att", 1), fs), g_rel=_tc(g("gate", "rel", 120), fs),
         )
@@ -277,13 +337,19 @@ class Dynamics:
             self.gate_prev = self._apply(x, lin, self.gate_prev)
             lvl = lvl - red
         if self.any_comp:
+            rms, kmin, amin, colour, mode = p["c_model"]
+            if rms.any() and sc is None:
+                if getattr(self, "comp_ms", None) is None or len(self.comp_ms) != x.shape[1]:
+                    self.comp_ms = np.zeros(x.shape[1])
+                lvl = comp_levels(x, nsub, rms, self.comp_ms, self.fs)
             over = (sc if sc is not None else lvl) - p["c_thr"]
-            k = p["c_knee"]
+            k = np.maximum(p["c_knee"], kmin)
             slope = 1 - 1 / p["c_ratio"]
             tgt = np.where(over <= -k / 2, 0.0,
                            np.where(over >= k / 2, over * slope, slope * (over + k / 2) ** 2 / (2 * k)))
             tgt = np.minimum(tgt, p["c_range"]) * p["c_on"]
-            red, self.comp_gr = self._smooth(tgt, self.comp_gr, p["c_att"], p["c_rel"])
+            att = np.maximum(p["c_att"], _tc(amin, self.fs)) if amin.any() else p["c_att"]
+            red, self.comp_gr = comp_smooth(tgt, self.comp_gr, att, p["c_rel"], mode)
             lin = 10 ** (-red / 20) * np.where(p["c_on"], p["c_make"], 1.0)
             if self.any_mix:  # parallel ("New York") compression: blend dry back in
                 dry = x.copy()
@@ -293,6 +359,7 @@ class Dynamics:
                 x += dry * (1 - m)
             else:
                 self.comp_prev = self._apply(x, lin, self.comp_prev)
+            comp_colour(x, colour * p["c_on"], self.comp_gr, p["c_thr"])
         return x
 
 

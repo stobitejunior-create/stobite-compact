@@ -37,6 +37,7 @@ DEFAULT_CFG = {
     "listen": "auto",                       # where to hear the mix when the WING is the interface
     "stream_out": "",
     "theme": "auto",
+    "hp_model": "", "hp_amount": 100,       # headphone correction (what you hear only)
     "metronome": False, "countin": False, "click_db": -12.0,   # click: headphones / speakers only                        # Auto (follow the computer) / light / dark                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
 }
 
@@ -360,6 +361,7 @@ class Engine:
         self.cables = CableIO()
         self.extra = ExtraInputs()   # other microphones / interfaces used by channels
         self.listen = ListenOut()    # the computer's own output, when the WING is the interface
+        self.hp_eq = None            # headphone correction, made on first use
         self.stream_out = ListenOut()  # the mix for OBS / Zoom (usually "CABLE Input", a virtual cable)
         self.guard = LoopGuard(int(self.cfg["sr"]), self.nch)
         self.out_is_wing = False
@@ -614,6 +616,12 @@ class Engine:
             hear = master                         # what you listen on: headphones / speakers
             if mixer.compare and mixer.before_out is not None and mixer.before_out.shape == master.shape:
                 hear = mixer.before_out           # the unprocessed "before" mix
+            hp = self.cfg.get("hp_model")
+            if hp:                                # headphone correction: only what you listen on
+                if self.hp_eq is None or self.hp_eq.sr != self.sr:
+                    from .hpcorrect import HeadphoneEQ
+                    self.hp_eq = HeadphoneEQ(self.sr)
+                hear = self.hp_eq.process(hear, hp, float(self.cfg.get("hp_amount", 100)))
             click = self._click(frames)
             if click is not None:
                 hear = hear + click[:, None]

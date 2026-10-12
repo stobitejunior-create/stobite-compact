@@ -4,7 +4,7 @@
 import sys
 from PyInstaller.utils.hooks import collect_all
 
-datas, binaries, hiddenimports = [("web", "web")], [], []
+datas, binaries, hiddenimports = [("web", "web"), ("stobite/headphones.json", "stobite")], [], []
 for pkg in ("sounddevice", "_sounddevice_data", "soundfile", "_soundfile_data", "pedalboard", "webview"):
     try:
         d, b, h = collect_all(pkg)

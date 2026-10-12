@@ -86,7 +86,11 @@
             : h('p', { class: 'snote' }, 'Pick “CABLE Input” to livestream. Setup steps are in Help.')),
         group('Listening',
           i.outIsWing ? row('Headphones', listenSel(i), i.listenError ? 'Couldn’t open it' : i.listenName ? 'On this computer' : 'Off') : null,
-          row('Live monitoring', toggle(c.monitor_live, v => save({ monitor_live: v })), 'Hear the inputs when not playing back')),
+          row('Live monitoring', toggle(c.monitor_live, v => save({ monitor_live: v })), 'Hear the inputs when not playing back'),
+          row('Headphone correction', h('select', { onchange: e => save({ hp_model: e.target.value, ...(e.target.value ? { hp_last: e.target.value } : {}) }) },
+            h('option', { value: '' }, 'Off'), ...(CATALOG?.headphones || []).map(n => h('option', { value: n, selected: n === c.hp_model }, n))), 'Flattens your headphones. Not on the stream or recording'),
+          c.hp_model ? row('Correction amount', h('div', { class: 'pair' }, h('input', { type: 'range', min: 0, max: 100, step: 5, value: c.hp_amount ?? 100,
+            oninput: e => { e.target.nextSibling.textContent = e.target.value + '%'; }, onchange: e => save({ hp_amount: +e.target.value }) }), h('span', {}, (c.hp_amount ?? 100) + '%'))) : null),
         group(null, advanced(
           i.outIsWing ? row('Send mix to the WING', toggle(c.wing_return, (v, el) => {
             if (v && !confirm('Send the mix back into the WING?\n\nOnly if its USB returns aren’t patched into channels that come back over USB, or it will screech. The app cuts the sound if it does.')) { el.checked = false; return; }
@@ -250,6 +254,8 @@
   // the scroll position and anything half-typed.
   const shown = () => { const i = S.info || {}; return JSON.stringify([i.status, i.error, i.audioNote, i.devIns, i.devOuts, i.inName, i.outName, i.inIsWing, i.sr, i.cfg, i.extraInputs, i.remote, i.urls, i.cables, i.wing && i.wing.ip, i.outIsWing, i.listenName, i.listenError, i.streamOutName, i.streamOutError, i.home]); };
   let lastShown = '';
-  on('info', () => { if (S.view !== 'setup') return; const k = shown(); if (k !== lastShown) render(); });
-  on('view', v => v === 'setup' && refresh());
+  on('info', () => { if (S.view !== 'setup') return; const k = shown(); if (wanted() || k !== lastShown) render(); });
+  // a command can ask for a section (Help, headphone correction) before opening Setup
+  const wanted = () => { try { const w = localStorage.getItem('stobite.setupTab'); if (w && w !== tab) { tab = w; return true; } } catch (e) { } return false; };
+  on('view', v => { if (v === 'setup') { wanted(); refresh(); } });
 })();

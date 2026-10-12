@@ -14,7 +14,7 @@ try:
 except Exception:  # pragma: no cover - optional
     pb = None
 
-KINDS = ("proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+KINDS = ("trigger", "proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 NOTE_BEATS = {"1/2": 2.0, "1/4": 1.0, "1/4d": 1.5, "1/8": 0.5, "1/8d": 0.75, "1/8t": 1 / 3, "1/16": 0.25}
 
@@ -95,6 +95,262 @@ class Denoiser:
         return y.T.astype(np.float32)
 
 
+# ---------------------------------------------------------------- drum samples (made here: nothing to license)
+
+def _env(n, fs, decay_ms):
+    return np.exp(-np.arange(n) / (fs * decay_ms / 1000.0))
+
+
+def _sweep(fs, f0, f1, ms, decay_ms):
+    n = int(fs * ms / 1000)
+    t = np.arange(n) / fs
+    f = f1 + (f0 - f1) * np.exp(-t * 40)                  # pitch drops quickly, like a struck drum head
+    return np.sin(2 * np.pi * np.cumsum(f) / fs) * _env(n, fs, decay_ms)
+
+
+def _noise(fs, ms, decay_ms, lo, hi, seed):
+    n = int(fs * ms / 1000)
+    rng = np.random.default_rng(seed)
+    X = np.fft.rfft(rng.standard_normal(n))
+    fr = np.fft.rfftfreq(n, 1 / fs)
+    X[(fr < lo) | (fr > hi)] = 0
+    return np.fft.irfft(X, n) / 3 * _env(n, fs, decay_ms)
+
+
+def builtin_samples(fs):
+    """name -> (label, mono float32 sample)."""
+    def fit(*parts):
+        n = max(len(p) for p in parts)
+        y = np.zeros(n)
+        for p in parts:
+            y[: len(p)] += p
+        return (y / (np.abs(y).max() + 1e-9) * 0.9).astype(np.float32)
+    click = _noise(fs, 6, 1.5, 2000, 12000, 1)
+    return {
+        "kick-punchy": ("Kick: punchy", fit(_sweep(fs, 160, 52, 450, 220), click * 0.6)),
+        "kick-deep": ("Kick: deep & long", fit(_sweep(fs, 110, 44, 800, 420), click * 0.3)),
+        "kick-tight": ("Kick: tight", fit(_sweep(fs, 190, 60, 260, 110), click * 0.9)),
+        "snare-tight": ("Snare: tight", fit(_sweep(fs, 260, 190, 200, 70) * 0.8, _noise(fs, 260, 110, 1800, 9000, 2))),
+        "snare-fat": ("Snare: fat", fit(_sweep(fs, 220, 165, 320, 120), _noise(fs, 420, 190, 1200, 8000, 3) * 1.2)),
+        "snare-rim": ("Rimshot", fit(_sweep(fs, 520, 480, 120, 30), _noise(fs, 200, 60, 2500, 11000, 4) * 0.8)),
+        "tom-high": ("Tom: high", fit(_sweep(fs, 230, 185, 500, 220), click * 0.2)),
+        "tom-mid": ("Tom: mid", fit(_sweep(fs, 170, 135, 600, 260), click * 0.2)),
+        "tom-floor": ("Tom: floor", fit(_sweep(fs, 120, 88, 800, 330), click * 0.2)),
+    }
+
+
+_SAMPLE_CACHE = {}
+
+
+def load_sample(spec, fs):
+    """'builtin:kick-punchy' or 'user:My Kick.wav' -> float32 mono at fs (cached)."""
+    key = (spec, fs)
+    if key in _SAMPLE_CACHE:
+        return _SAMPLE_CACHE[key]
+    y = None
+    if spec.startswith("builtin:"):
+        b = builtin_samples(fs).get(spec[8:])
+        y = b[1] if b else None
+    elif spec.startswith("user:"):
+        import os
+        import soundfile as sf
+        from .session import home_dir
+        p = os.path.join(home_dir(), "Samples", os.path.basename(spec[5:]))
+        if os.path.exists(p):
+            d, sr = sf.read(p, dtype="float32", always_2d=True)
+            d = d.mean(axis=1)
+            if sr != fs:     # simple resample: good enough for one-shot drum samples
+                d = np.interp(np.arange(0, len(d), sr / fs), np.arange(len(d)), d).astype(np.float32)
+            y = d / (np.abs(d).max() + 1e-9) * 0.9
+    if y is not None:
+        _SAMPLE_CACHE[key] = y
+    return y
+
+
+class Trigger:
+    """Drum trigger: finds each hit on a drum mic and plays a sample with it.
+
+    Detection runs on a band-limited copy (so kick spill doesn't fire the snare), with a threshold
+    set by Sensitivity and a retrigger time that stops one hit firing twice. Velocity follows how
+    hard the drum was hit (Dynamics), and Mix blends the sample with the real drum."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.voices = []           # [sample, position, gain]
+        self.since = 10 ** 9       # samples since the last hit
+        self.env = 0.0
+        self.armed = True
+        self.hits = 0
+        self.det = None
+        self.det_key = None
+        self.flash = 0.0
+
+    def _detector(self, lo, hi):
+        if pb is None:
+            return None
+        if self.det_key != (lo, hi):
+            # steep (each filter twice): kick spill in a snare mic stays well under the threshold
+            self.det = pb.Pedalboard([pb.HighpassFilter(float(lo)), pb.HighpassFilter(float(lo)),
+                                      pb.LowpassFilter(float(hi)), pb.LowpassFilter(float(hi))])
+            self.det_key = (lo, hi)
+        return self.det
+
+    def process(self, x, p):
+        n = len(x)
+        fs = self.fs
+        mono = x[:, 0].astype(np.float32)
+        det = self._detector(p.get("det_lo", 30), p.get("det_hi", 8000))
+        d = det(mono[None, :], fs, reset=False)[0] if det is not None else mono
+        thr = 10 ** ((-55.0 + (100.0 - float(p.get("sensitivity", 50))) * 0.45) / 20)   # 50 -> about -32 dBFS
+        retrig = int(fs * float(p.get("retrigger", 60)) / 1000)
+        a = np.abs(d)
+        sub = 16
+        m = len(a) // sub
+        env = a[: m * sub].reshape(m, sub).max(axis=1) if m else np.zeros(0)
+        samples = [s for s in (p.get("sample"), p.get("sample2")) if s]
+        hits = []
+        rel = math.exp(-sub / (fs * 0.04))                  # the drum's recent level falls away over ~40 ms
+        lag = max(1, int(fs * 0.008 / sub))
+        if len(getattr(self, "hist", ())) != lag:
+            self.hist, self.hi = [0.0] * lag, 0
+        for k, v in enumerate(env):
+            self.since += sub
+            # a hit = over the threshold AND a sudden jump above the drum's recent level (a ringing
+            # tail never jumps, so it can't fire again), and not too soon after the last one
+            # compared with the level ~8 ms ago: a low kick takes a few ms to rise through the detector
+            past = self.hist[self.hi % lag]
+            if v > thr and v > past * 2.5 and self.since >= retrig:
+                pk = float(a[k * sub: k * sub + 96].max()) if k * sub < len(a) else v   # hit strength just after the onset
+                # and within ~20 dB of this drum's own recent hard hits: spill from other drums is quieter
+                # than that, a ghost note (about 12 dB down) still counts
+                floor = getattr(self, "loudest", 0.0) * float(10 ** (-float(p.get("reject", 16)) / 20))
+                if pk >= floor:
+                    hits.append((k * sub, pk))
+                    self.since = 0
+            self.env = max(v, self.env * rel)
+            self.hist[self.hi % lag] = self.env
+            self.hi += 1
+        dyn = float(np.clip(p.get("dynamics", 70), 0, 100)) / 100
+        vol = 10 ** (float(p.get("volume", 0)) / 20)
+        semis = float(p.get("tune", 0))
+        for at, pk in hits:
+            self.hits += 1
+            self.flash = 1.0
+            self.loudest = max(getattr(self, "loudest", 0.0) * 0.999, pk)
+            vel = min(1.0, pk / max(self.loudest, thr * 4))      # relative to the hardest recent hits
+            g = vol * ((1 - dyn) + dyn * vel)
+            for j, spec in enumerate(samples):
+                smp = load_sample(spec, fs)
+                if smp is None:
+                    continue
+                if abs(semis) > 0.01:
+                    r = 2 ** (semis / 12)
+                    smp = np.interp(np.arange(0, len(smp), r), np.arange(len(smp)), smp).astype(np.float32)
+                lvl = 1.0 if j == 0 else 10 ** (float(p.get("volume2", -6)) / 20)
+                self.voices.append([smp, -at, g * lvl])
+        out = np.zeros(n, np.float32)
+        keep = []
+        for vv in self.voices:
+            smp, pos, g = vv
+            start = max(0, -pos)                  # where in this block the sample begins
+            src = max(0, pos)
+            k = min(n - start, len(smp) - src)
+            if k > 0:
+                out[start:start + k] += smp[src:src + k] * g
+            vv[1] = src + k if pos >= 0 else k
+            if vv[1] < len(smp):
+                keep.append(vv)
+        self.voices = keep[-8:]                   # a few overlapping hits at most
+        mix = float(np.clip(p.get("mix", 100), 0, 100)) / 100
+        y = x.copy()
+        y[:, 0] = x[:, 0] * (1 - mix) + out * mix
+        if y.shape[1] > 1:
+            y[:, 1:] = y[:, :1]
+        return y
+
+    def reading(self):
+        v, self.flash = self.flash, 0.0          # held until the meters read it, so no hit is missed
+        return 10.0 if v else 0.0
+
+
+class Rider:
+    """Vocal rider: moves the level up and down like an engineer riding the fader, so every word
+    sits at the target level before any compressor. Quiet gaps (below the floor) are left alone,
+    so breaths and room noise aren't pulled up."""
+
+    def __init__(self, fs):
+        self.fs = fs
+        self.ms = 0.0          # running mean-square (~60 ms)
+        self.gain = 0.0        # current ride in dB
+
+    def process(self, x, p):
+        n = len(x)
+        mono = x.mean(axis=1).astype(np.float64)
+        a = math.exp(-n / (self.fs * 0.06))
+        self.ms = a * self.ms + (1 - a) * float(np.mean(mono ** 2))
+        lvl = 10 * math.log10(self.ms + 1e-12) + 3.0
+        rng = abs(float(p.get("range", 6)))
+        g0 = self.gain
+        if lvl > float(p.get("floor", -50)):
+            want = float(np.clip(float(p.get("target", -20)) - lvl, -rng, rng))   # measured before the ride
+            c = math.exp(-n / (self.fs * max(float(p.get("speed", 300)), 10) / 1000))
+            self.gain = want + c * (self.gain - want)
+        else:                  # a gap: drift back to 0 dB so room noise isn't pulled up for long
+            self.gain *= math.exp(-n / (self.fs * 1.5))
+        ramp = np.linspace(10 ** (g0 / 20), 10 ** (self.gain / 20), n, dtype=np.float32)
+        return x * ramp[:, None]
+
+    def reading(self):
+        return round(self.gain, 1)
+
+
+class BassEnhancer:
+    """Psychoacoustic bass (like MaxxBass): adds harmonics of the lowest notes, so the ear hears
+    the bass on phones, laptops and small speakers that can't play it. "Original" turns the real
+    sub-bass down (for small speakers, or to clear headroom)."""
+
+    def __init__(self, fs, nch):
+        self.fs, self.nch = fs, nch
+        self.key = None
+        self.env = np.zeros(nch)
+
+    def _build(self, f):
+        f = float(np.clip(f, 40, 250))
+        self.lp = pb.Pedalboard([pb.LowpassFilter(f), pb.LowpassFilter(f)])
+        self.hp_orig = pb.Pedalboard([pb.HighpassFilter(f), pb.HighpassFilter(f)])
+        # the new harmonics: from the cutoff up two octaves or so
+        self.band = pb.Pedalboard([pb.HighpassFilter(f * 0.9), pb.HighpassFilter(f * 0.9), pb.LowpassFilter(f * 5)])
+        self.key = f
+
+    def process(self, x, p):
+        if pb is None:
+            return x
+        f = float(p.get("freq", 90))
+        if self.key != f:
+            self._build(f)
+        xt = x.T.astype(np.float32)
+        low = self.lp(xt, self.fs, reset=False)
+        # level-independent harmonic generator: normalise by the low end's envelope, shape, scale back
+        n = xt.shape[1]
+        a = math.exp(-n / (self.fs * 0.03))
+        peak = np.abs(low).max(axis=1)
+        self.env = np.maximum(peak, a * self.env + (1 - a) * peak)
+        e = (self.env + 1e-4)[:, None].astype(np.float32)
+        u = np.clip(low / e, -1, 1)
+        # Chebyshev shaping: a note's 2nd and 3rd harmonics, with none of the note itself
+        gen = (0.7 * (2 * u * u - 1) + 0.4 * (4 * u ** 3 - 3 * u)) * e
+        h = self.band(gen.astype(np.float32), self.fs, reset=False)
+        amt = float(np.clip(p.get("amount", 50), 0, 100)) / 100 * 1.4
+        orig = 10 ** (float(np.clip(p.get("original", 0), -24, 0)) / 20)
+        y = xt + h * amt
+        if orig < 0.999:
+            y = y - low * (1 - orig)
+        return y.T
+
+    def reading(self):
+        return 0.0
+
+
 class Proximity:
     """The bass boost a directional mic gives when the source is very close.
     "add": warmth as if the singer were right on the mic (a low shelf).
@@ -170,6 +426,18 @@ class Effect:
     def set(self, m):
         self.p = dict(m)
         k, p = self.kind, self.p
+        if k == "trigger":
+            if not isinstance(self.dev, Trigger):
+                self.dev = Trigger(self.fs)
+            return
+        if k == "rider":
+            if not isinstance(self.dev, Rider):
+                self.dev = Rider(self.fs)
+            return
+        if k == "bass":
+            if not isinstance(self.dev, BassEnhancer):
+                self.dev = BassEnhancer(self.fs, self.nch)
+            return
         if k == "proximity":
             if not isinstance(self.dev, Proximity):
                 self.dev = Proximity(self.fs, self.nch)
@@ -248,6 +516,13 @@ class Effect:
         if frames == 0:
             return x
         mix = float(np.clip(p.get("mix", 100) / 100, 0, 1))
+        if k == "trigger":
+            return self.dev.process(x, p).astype(np.float32)
+        if k == "rider":
+            return self.dev.process(x, p).astype(np.float32)
+        if k == "bass":
+            y = self.dev.process(x, p)
+            return (x * (1 - mix) + y * mix).astype(np.float32) if mix < 0.999 else y.astype(np.float32)
         if k == "proximity":
             return self.dev.process(x, p).astype(np.float32)
         if k == "denoise":

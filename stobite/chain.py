@@ -17,6 +17,7 @@ import string
 
 import numpy as np
 
+from . import dsp
 from .dsp import (SUB, BW4_Q, DeEsser, Dynamics, FilterBank, _db, _tc, biquad, sosfilt_fast, strip_sos)
 from .procs import (DynEQ, LookaheadLimiter, Multiband, Saturator, Transient, _shape, width_balance)
 from .autotune import AutoTune
@@ -35,7 +36,10 @@ TYPES = {
     "mbc": ("Multiband compressor", "MB", False, True),
     "width": ("Width & balance", "WIDE", False, True),
     "limiter": ("Limiter", "LIM", False, True),
+    "trigger": ("Drum trigger", "TRIG", True, False),
     "proximity": ("Proximity", "PROX", True, True),
+    "rider": ("Vocal rider", "RIDE", True, True),
+    "bass": ("Bass enhancer", "BASS", True, True),
     "denoise": ("Denoiser", "DNS", True, True),
     "reverb": ("Reverb", "VERB", True, True),
     "delay": ("Delay / echo", "DLY", True, True),
@@ -50,7 +54,7 @@ TYPES = {
     "gain": ("Gain / utility", "GAIN", True, True),
     "plugin": ("Plug-in", "PLUG", True, True),
 }
-EFFECTS = ("proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
+EFFECTS = ("trigger", "rider", "bass", "proximity", "denoise", "reverb", "delay", "chorus", "flanger", "phaser", "tremolo", "autofilter", "distortion", "bitcrush", "pitch", "gain")
 
 
 def new_id():
@@ -70,14 +74,14 @@ DEFAULTS = {
     "eq": lambda: {"hpf": {"on": False, "freq": 80, "slope": 24}, "lpf": {"on": False, "freq": 16000, "slope": 12},
                    "bands": _bands_flat()},
     "gate": lambda: {"thr": -50, "range": 40, "att": 1, "rel": 120},
-    "comp": lambda: {"thr": -18, "ratio": 3, "knee": 6, "att": 10, "rel": 150, "makeup": 0, "mix": 100, "range": 30, "sc": ""},
+    "comp": lambda: {"thr": -18, "ratio": 3, "knee": 6, "att": 10, "rel": 150, "makeup": 0, "mix": 100, "range": 30, "sc": "", "model": "clean"},
     "deess": lambda: {"freq": 6500, "thr": -28, "range": 8},
     "dyneq": lambda: {"sc": "", "bands": [
         {"on": True, "type": "bell", "freq": 250, "q": 1.2, "gain": 0, "thr": -24, "range": -3, "att": 10, "rel": 150},
         {"on": False, "type": "bell", "freq": 3500, "q": 2.0, "gain": 0, "thr": -26, "range": -3, "att": 3, "rel": 100}]},
     "trans": lambda: {"attack": 2, "sustain": 0},
     "sat": lambda: {"flavor": "tape", "drive": 3, "mix": 100},
-    "tune": lambda: {"amount": 100, "speed": 40, "voice": "any", "scale": "song"},
+    "tune": lambda: {"amount": 100, "speed": 80, "voice": "any", "scale": "song", "style": "natural", "humanize": 12},
     "mbc": lambda: {"x1": 180, "x2": 3500, "bands": [
         {"thr": -20, "ratio": 2, "att": 30, "rel": 250, "gain": 0, "range": 3},
         {"thr": -18, "ratio": 1.5, "att": 20, "rel": 200, "gain": 0, "range": 2},
@@ -85,7 +89,11 @@ DEFAULTS = {
     "width": lambda: {"width": 100.0, "balance": 0.0},
     "limiter": lambda: {"ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
     "plugin": lambda: {"path": "", "name": "Plug-in", "params": {}},
+    "trigger": lambda: {"sample": "builtin:kick-punchy", "sample2": "", "volume2": -6, "sensitivity": 50, "retrigger": 60,
+                        "dynamics": 70, "volume": 0, "tune": 0, "mix": 50, "det_lo": 30, "det_hi": 8000, "reject": 16},
     "proximity": lambda: {"mode": "tame", "amount": 6, "freq": 200},
+    "rider": lambda: {"target": -20, "range": 6, "speed": 300, "floor": -50},
+    "bass": lambda: {"freq": 90, "amount": 50, "original": 0, "mix": 100},
     "denoise": lambda: {"reduction": 12, "sensitivity": 50, "mix": 100},
     "reverb": lambda: {"size": 60, "damping": 50, "width": 100, "mix": 25},
     "delay": lambda: {"sync": True, "note": "1/4", "time": 375, "feedback": 30, "lowcut": 200, "highcut": 6000, "mix": 20},
@@ -213,7 +221,7 @@ class _Bank:
 
 
 class CompBank(_Bank):
-    STATE = ("gr", "prev")
+    STATE = ("gr", "prev", "ms")
 
     def state_init(self, k, n):
         return np.ones(n) if k == "prev" else np.zeros(n)
@@ -224,15 +232,19 @@ class CompBank(_Bank):
         self.knee, self.make = np.maximum(f("knee", 6), 0.01), 10 ** (f("makeup", 0) / 20)
         self.att, self.rel = _tc(f("att", 10), self.fs), _tc(f("rel", 150), self.fs)
         self.mix, self.rng = np.clip(f("mix", 100) / 100, 0, 1), np.abs(f("range", 30))
+        self.rms, self.kmin, amin, self.colour, self.mode = dsp.comp_model_arrays([m.get("model") for m in mods])
+        self.att = np.maximum(self.att, _tc(amin, self.fs)) if len(amin) else self.att
 
     def process(self, x, s):
         nsub = max(x.shape[0] // SUB, 1)
-        lvl = _db(np.abs(x[: nsub * SUB]).reshape(nsub, SUB, -1).max(axis=1))
-        over, k, slope = lvl - self.thr[s], self.knee[s], 1 - 1 / self.ratio[s]
+        ms = self.ms[s]
+        lvl = dsp.comp_levels(x, nsub, self.rms[s], ms, self.fs)
+        self.ms[s] = ms
+        over, k, slope = lvl - self.thr[s], np.maximum(self.knee[s], self.kmin[s]), 1 - 1 / self.ratio[s]
         tgt = np.where(over <= -k / 2, 0.0, np.where(over >= k / 2, over * slope, slope * (over + k / 2) ** 2 / (2 * k)))
         tgt = np.minimum(tgt, self.rng[s])
         tgt = link_pairs(tgt, s, getattr(self, "partner", None))   # a stereo pair ducks together
-        red, self.gr[s] = Dynamics._smooth(tgt, self.gr[s], self.att[s], self.rel[s])
+        red, self.gr[s] = dsp.comp_smooth(tgt, self.gr[s], self.att[s], self.rel[s], self.mode[s])
         lin = 10 ** (-red / 20) * self.make[s]
         mix = self.mix[s].astype(np.float32)
         if (mix < 0.999).any():
@@ -242,6 +254,7 @@ class CompBank(_Bank):
             x += dry * (1 - mix)
         else:
             self.prev[s] = Dynamics._apply(x, lin, self.prev[s])
+        dsp.comp_colour(x, self.colour[s], self.gr[s], self.thr[s])
         return x
 
 
@@ -491,6 +504,8 @@ class ChannelChains:
                 out[mid] = [b.get("_live", 0) for b in self.objs[mid].bands]
             elif t == "tune" and mid in self.objs:
                 out[mid] = self.objs[mid].readout()
+            elif mid in self.objs and getattr(getattr(self.objs[mid], "dev", None), "reading", None):
+                out[mid] = self.objs[mid].dev.reading()
         return out
 
     def tune_readouts(self):
