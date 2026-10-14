@@ -172,10 +172,13 @@
     const badges = chainBadges(['channels', c], ch.chain);
     const gr = h('i');
     const sends = h('div', { class: 'sends' }, ...S.mixer.fx.map((f, i) => bind(P('sends', i), Knob({ label: f.name.split(' ').pop().slice(0, 6), min: -90, max: 10, value: ch.sends[i], def: -90, size: 26, format: fmt.db, color: '#3aa0ff', onChange: v => setParam(P('sends', i), v) })).el));
+    // input gain (trim), at the top like a console: set this first so the meter peaks around -12
+    const gain = bind(P('trim'), Knob({ label: 'Gain', min: -24, max: 24, value: ch.trim ?? 0, def: 0, size: 28, format: fmt.db, bipolar: true, color: '#ffd23f', onChange: v => setParam(P('trim'), v) }));
     const pan = bind(P('pan'), Knob({ label: 'Pan', min: -1, max: 1, value: ch.pan, def: 0, size: 28, format: fmt.pan, bipolar: true, onChange: v => setParam(P('pan'), v) }));
     const db = h('div', { class: 'db' }, fmt.db(ch.fader));
     const meter = Meter();
     el.append(h('div', { class: 'shead' }, ic, h('span', { class: 'snum' }, c + 1)), name, io,
+      h('div', { class: 'cen', title: 'Input gain: how loud this channel comes in, before any processing' }, gain.el),
       h('div', { class: 'eqthumb', onclick: () => openEditor(c) }, thumb), badges, h('div', { class: 'gr', title: 'Compressor gain reduction' }, gr),
       showSends ? sends : null, h('div', { class: 'cen' }, pan.el),
       h('div', { class: 'row' }, muteBtn(P('mute')), muteBtn(P('solo'), 's', 'S'), autoModeButton(String(c))),
@@ -1087,8 +1090,9 @@
           K(M('det_lo'), { label: 'Listen from', min: 20, max: 1000, log: true, def: 30, format: fmt.hz, size: 32 }),
           K(M('det_hi'), { label: 'Listen to', min: 1000, max: 16000, log: true, def: 8000, format: fmt.hz, size: 32 }),
           K(M('retrigger'), { label: 'Retrigger', min: 10, max: 250, log: true, def: 60, format: fmt.ms, size: 32 }),
-          K(M('reject'), { label: 'Ignore spill', min: 6, max: 30, def: 16, format: v => Math.round(v) + ' dB', size: 32 })),
-        h('p', { class: 'hint' }, 'Plays a sample on every hit. Too many hits: lower Sensitivity or raise Ignore spill. Missed soft hits: the opposite.'));
+          K(M('reject'), { label: 'Ignore spill', min: 6, max: 30, def: 16, format: v => Math.round(v) + ' dB', size: 32 }),
+          K(M('confirm'), { label: 'Confirm ring', min: 0, max: 80, def: 0, format: v => v < 1 ? 'Off' : Math.round(v) + 'ms', size: 32 })),
+        h('p', { class: 'hint' }, 'Plays a sample on every hit. Too many hits: lower Sensitivity or raise Ignore spill. Missed soft hits: the opposite. Cymbals: Confirm ring 30–50 ms ignores snare and kick in the overheads.'));
     } else if (m.type === 'reverb') {
       kids.push(h('div', { class: 'knobs' },
         K(M('size'), { label: 'Size', min: 0, max: 100, def: 60, format: v => Math.round(v) + '%', size: 46, big: true }),

@@ -5,6 +5,7 @@ Each one is a chain module like the EQ or compressor: add it anywhere in a chain
 you like. Most are built on Spotify's pedalboard (already used for plug-ins), with a wet/dry
 "mix" so they can be used subtly. Channels are mono, buses stereo.
 """
+import functools
 import math
 
 import numpy as np
@@ -117,6 +118,19 @@ def _noise(fs, ms, decay_ms, lo, hi, seed):
     return np.fft.irfft(X, n) / 3 * _env(n, fs, decay_ms)
 
 
+def _metal(fs, ms, decay_ms, lo, hi, seed, base=1.0):
+    """Cymbal-like: six inharmonic square waves (the classic metallic cluster) plus noise, band-limited."""
+    n = int(fs * ms / 1000)
+    t = np.arange(n) / fs
+    y = sum(np.sign(np.sin(2 * np.pi * f * base * t + k)) for k, f in enumerate((205.3, 304.4, 369.6, 522.7, 540.0, 800.0)))
+    y = y / 6 + np.random.default_rng(seed).standard_normal(n) * 0.6
+    X = np.fft.rfft(y)
+    fr = np.fft.rfftfreq(n, 1 / fs)
+    X[(fr < lo) | (fr > hi)] = 0
+    return np.fft.irfft(X, n) * _env(n, fs, decay_ms)
+
+
+@functools.lru_cache(maxsize=4)
 def builtin_samples(fs):
     """name -> (label, mono float32 sample)."""
     def fit(*parts):
@@ -136,6 +150,12 @@ def builtin_samples(fs):
         "tom-high": ("Tom: high", fit(_sweep(fs, 230, 185, 500, 220), click * 0.2)),
         "tom-mid": ("Tom: mid", fit(_sweep(fs, 170, 135, 600, 260), click * 0.2)),
         "tom-floor": ("Tom: floor", fit(_sweep(fs, 120, 88, 800, 330), click * 0.2)),
+        "hat-closed": ("Hi-hat: closed", fit(_metal(fs, 120, 30, 6000, 16000, 5, 1.6))),
+        "hat-open": ("Hi-hat: open", fit(_metal(fs, 700, 260, 5000, 16000, 6, 1.6))),
+        "crash": ("Crash", fit(_metal(fs, 2600, 900, 3000, 16000, 7, 1.1), _noise(fs, 2600, 700, 4000, 14000, 8) * 0.8)),
+        "ride": ("Ride", fit(_metal(fs, 1800, 700, 2500, 12000, 9, 1.3) * 0.6, _sweep(fs, 3200, 3150, 900, 400) * 0.35)),
+        "splash": ("Splash", fit(_metal(fs, 900, 300, 4500, 16000, 10, 1.5), _noise(fs, 900, 250, 5000, 15000, 11) * 0.6)),
+        "china": ("China", fit(np.tanh(3 * _metal(fs, 1800, 600, 2000, 13000, 12, 0.9)))),
     }
 
 
@@ -165,6 +185,12 @@ def load_sample(spec, fs):
     if y is not None:
         _SAMPLE_CACHE[key] = y
     return y
+
+
+def trigger_latency(p, fs):
+    """The trigger's confirm wait in samples (a whole number of 16-sample steps)."""
+    ms = float(np.clip(p.get("confirm", 0) or 0, 0, 80))
+    return int(fs * ms / 1000) // 16 * 16
 
 
 class Trigger:
@@ -213,20 +239,38 @@ class Trigger:
         lag = max(1, int(fs * 0.008 / sub))
         if len(getattr(self, "hist", ())) != lag:
             self.hist, self.hi = [0.0] * lag, 0
+        # Confirm ring (cymbals): only a hit still ringing a moment later counts. A cymbal rings for
+        # seconds, snare / kick spill in an overhead dies in tens of ms. The sound is delayed by the
+        # same time (and the mixer compensates), so the sample still lands on the hit.
+        wait = trigger_latency(p, fs) // sub
+        if not hasattr(self, "cands"):
+            self.cands, self.kabs = [], 0
         for k, v in enumerate(env):
             self.since += sub
+            self.kabs += 1
+            self.ring = (getattr(self, "ring", [])[-5:]) + [v]      # the last ~1.5 ms
+            if self.cands and self.cands[0][0] <= self.kabs:
+                due, pk0 = self.cands.pop(0)
+                if max(self.ring) >= 0.45 * pk0 and self.since >= retrig:
+                    hits.append((k * sub, pk0))
+                    self.since = 0          # only a confirmed hit holds off the next one
             # a hit = over the threshold AND a sudden jump above the drum's recent level (a ringing
             # tail never jumps, so it can't fire again), and not too soon after the last one
             # compared with the level ~8 ms ago: a low kick takes a few ms to rise through the detector
             past = self.hist[self.hi % lag]
-            if v > thr and v > past * 2.5 and self.since >= retrig:
+            # (with Confirm ring the ring check weeds out spill, so a smaller jump is enough)
+            if v > thr and v > past * (1.6 if wait else 2.5) and self.since >= retrig:
                 pk = float(a[k * sub: k * sub + 96].max()) if k * sub < len(a) else v   # hit strength just after the onset
                 # and within ~20 dB of this drum's own recent hard hits: spill from other drums is quieter
                 # than that, a ghost note (about 12 dB down) still counts
                 floor = getattr(self, "loudest", 0.0) * float(10 ** (-float(p.get("reject", 16)) / 20))
                 if pk >= floor:
-                    hits.append((k * sub, pk))
-                    self.since = 0
+                    if wait:
+                        if not self.cands or self.kabs - (self.cands[-1][0] - wait) >= lag:
+                            self.cands.append([self.kabs + wait, pk])
+                    else:
+                        hits.append((k * sub, pk))
+                        self.since = 0
             self.env = max(v, self.env * rel)
             self.hist[self.hi % lag] = self.env
             self.hi += 1
@@ -263,7 +307,15 @@ class Trigger:
         self.voices = keep[-8:]                   # a few overlapping hits at most
         mix = float(np.clip(p.get("mix", 100), 0, 100)) / 100
         y = x.copy()
-        y[:, 0] = x[:, 0] * (1 - mix) + out * mix
+        dry = x[:, 0]
+        D = trigger_latency(p, fs)
+        if D:                                      # the real drum, delayed to match the confirm wait
+            buf = getattr(self, "dbuf", None)
+            if buf is None or len(buf) != D:
+                buf = np.zeros(D, np.float32)
+            cat = np.concatenate([buf, dry.astype(np.float32)])
+            dry, self.dbuf = cat[:n], cat[n:]
+        y[:, 0] = dry * (1 - mix) + out * mix
         if y.shape[1] > 1:
             y[:, 1:] = y[:, :1]
         return y
@@ -412,6 +464,12 @@ class Proximity:
 
 
 LATENCY = {"denoise": Denoiser.N - Denoiser.HOP}   # samples each effect delays the sound by
+
+
+def latency(m, fs):
+    """Samples a module delays the sound by (for delay compensation)."""
+    t = m.get("type")
+    return trigger_latency(m, fs) if t == "trigger" else LATENCY.get(t, 0)
 
 
 class Effect:

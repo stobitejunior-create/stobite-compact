@@ -852,6 +852,8 @@ class Engine:
         return was_rec
 
     def locate(self, pos):
+        if self.recording or self.counting:
+            return       # the playhead is the recording's position: moving it would cut the take short
         self.playhead = max(0, int(pos))
         if self.playing:
             self.feeder.flush()
@@ -969,13 +971,24 @@ class Engine:
         self.save_cfg()
         self.emit("session")
 
-    def open_session(self, name):
+    def open_session(self, name, progress=lambda frac, msg: None):
         if self.recording:
             raise RuntimeError("Stop recording first")
         self.stop()
         if self.session:
             self.save()
+        progress(0.02, "Opening")
         s = Session.load(name, self.nch)
+        # waveform overviews first (building a missing one reads the whole recording), so the
+        # timeline draws at once; this is most of the wait on a long service
+        files = sorted({c["file"] for c in s.clips})
+        for k, f in enumerate(files):
+            progress(0.05 + 0.8 * k / max(len(files), 1), f"Loading tracks {k + 1} of {len(files)}")
+            try:
+                s.peaks(f, 1024)
+            except Exception:
+                traceback.print_exc()
+        progress(0.88, "Loading the mix")
         if s.nch != self.nch:
             s.nch = self.nch
         try:
@@ -992,6 +1005,7 @@ class Engine:
             self.restore_inserts()
         self.cfg["session"] = s.name
         self.save_cfg()
+        progress(1.0, "Ready")
         self.emit("session")
         self.emit("mixer")
 

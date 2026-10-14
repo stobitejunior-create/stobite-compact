@@ -1,4 +1,5 @@
 .venv/
+.venv-intel/
 .testhome/
 build/
 dist/

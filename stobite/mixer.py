@@ -444,7 +444,7 @@ class Mixer:
         self._dca = (dca_off, dca_mute) if (dca_off.any() or dca_mute.any()) else None
         # delay per channel: automatic compensation (every channel waits for the slowest chain, so
         # e.g. a denoiser on one mic doesn't smear it against the others) + any alignment delay set by hand
-        lat = np.array([0 if ch.get("bypass") else sum(effects.LATENCY.get(m.get("type"), 0) for m in ch.get("chain") or [] if m.get("on", True))
+        lat = np.array([0 if ch.get("bypass") else sum(effects.latency(m, self.fs) for m in ch.get("chain") or [] if m.get("on", True))
                         for ch in chs])
         user = np.array([int(round(max(0.0, float(ch.get("delay", 0) or 0)) * self.fs / 1000)) for ch in chs])
         d = (lat.max() - lat) * (lat.max() > 0) + user

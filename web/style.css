@@ -763,3 +763,9 @@ body.locked .view.on::before { content: "Mix locked for the service"; position: 
 .frow .lbl { font-size: 11px; color: var(--dim); width: 48px; }
 .trighit { width: 12px; height: 12px; border-radius: 50%; background: var(--line); flex: none; transition: background .08s; }
 .trighit.on { background: var(--green); transition: none; }
+
+.loader { position: fixed; inset: 0; z-index: 900; display: grid; place-items: center; background: rgba(0,0,0,.45); }
+.loader-card { width: min(360px, calc(100vw - 32px)); background: var(--bg2); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; display: grid; gap: 8px; }
+.loader-card span { font-size: 12px; color: var(--dim); }
+.loader-bar { height: 6px; border-radius: 3px; background: var(--bg4); overflow: hidden; }
+.loader-bar i { display: block; height: 100%; width: 2%; background: var(--accent, #f76b15); transition: width .15s; }

@@ -1,11 +1,19 @@
-# Builds the Mac .dmg files (Apple silicon and Intel) and the Windows installer .exe on GitHub's machines.
-# Runs when a version tag (v1.2.3) is pushed — e.g. by `update compact` — or by hand from the Actions tab,
-# and publishes both files as a GitHub Release.
+# Builds the Windows installer .exe on GitHub's machines and adds it to a release.
+# It only runs when asked (to save GitHub Actions minutes): `update compact --windows` starts it,
+# or the Run workflow button on the Actions tab. The Mac DMGs are built on the Mac itself
+# (build_mac.sh) and never use GitHub minutes.
 name: Build apps
 on:
-  push:
-    tags: ["v*"]        # each "update compact" pushes a new version tag
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach the installer to (e.g. v1.4.2); blank = just build"
+        required: false
+        default: ""
+      mac:
+        description: "Also build the Macs on GitHub (uses 10x minutes; normally built locally)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -15,13 +23,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: macos-14, name: Mac-Apple-Silicon }       # M1 / M2 / M3 / M4 Macs
-          - { os: macos-15-intel, name: Mac-Intel }          # Intel Macs (GitHub's Intel macOS machines)
-          - { os: windows-latest, name: Windows }
-    runs-on: ${{ matrix.os }}
+        # Windows always; the Macs only when the "mac" box is ticked
+        target: ${{ fromJSON(inputs.mac && '["Windows","Mac-Apple-Silicon","Mac-Intel"]' || '["Windows"]') }}
+    runs-on: ${{ matrix.target == 'Windows' && 'windows-latest' || matrix.target == 'Mac-Intel' && 'macos-15-intel' || 'macos-14' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
 
@@ -40,20 +48,22 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          $env:APP_VERSION = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "1.0.0" }
+          $env:APP_VERSION = if ("${{ inputs.tag }}") { "${{ inputs.tag }}".TrimStart("v") } else { "1.0.0" }
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer\windows.iss
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Stobite-Compact-${{ matrix.name }}
+          name: Stobite-Compact-${{ matrix.target }}
           path: |
             dist/*.dmg
             dist/*Setup.exe
+          retention-days: 3
 
-      - name: Publish release (tags only)
-        if: github.ref_type == 'tag'
+      - name: Add to the release
+        if: inputs.tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag }}
           files: |
             dist/*.dmg
             dist/*Setup.exe

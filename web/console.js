@@ -20,7 +20,8 @@
     const p = pending.get(addr);
     if (!p || performance.now() - p.t < 300) return;
     pending.delete(addr);
-    const same = addr.endsWith('/fdr') ? (Math.abs(val - p.v) < 0.5 || (val <= -89 && p.v <= -89)) : (!!val === !!p.v);
+    const same = addr.endsWith('/fdr') ? (Math.abs(val - p.v) < 0.5 || (val <= -89 && p.v <= -89))
+      : addr.endsWith('/$g') ? Math.abs(val - p.v) < 1.5 : (!!val === !!p.v);
     lockNote.hidden = same;
   }
 
@@ -32,7 +33,17 @@
       const db = h('div', { class: 'db' }, fmt.db(S.wing[base + '/fdr'] ?? -90));
       const fader = Fader({ value: S.wing[base + '/fdr'] ?? -90, onChange: v => { send({ t: 'wing', a: 'set', addr: base + '/fdr', v }); sent(base + '/fdr', v); db.textContent = fmt.db(v); } });
       const mute = h('button', { class: 'tog m' + (S.wing[base + '/mute'] ? ' on' : ''), onclick: () => { const v = S.wing[base + '/mute'] ? 0 : 1; S.wing[base + '/mute'] = v; mute.classList.toggle('on', !!v); send({ t: 'wing', a: 'set', addr: base + '/mute', v }); sent(base + '/mute', v); } }, 'MUTE');
-      box.append(h('div', { class: 'wstrip' }, name, mute, h('div', { class: 'fz' }, fader.el), db));
+      // the WING's own preamp gain (the mic's headamp), on input channels. Shown once the console
+      // reports it, so a firmware that names it differently doesn't get a dead knob.
+      let gainEl = null;
+      if (bank === 'ch') {
+        const ga = base + '/in/set/$g';
+        const gk = Knob({ label: 'Gain', min: -3, max: 45.5, value: S.wing[ga] ?? 0, def: 0, step: 0.5, size: 30, format: fmt.db, color: '#ffd23f',
+          onChange: v => { send({ t: 'wing', a: 'set', addr: ga, v }); sent(ga, v); } });
+        gainEl = h('div', { class: 'cen', title: 'Preamp gain on the WING (the mic input itself)', hidden: S.wing[ga] == null }, gk.el);
+        ctl.set(ga, v => { gainEl.hidden = false; gk.set(v); });
+      }
+      box.append(h('div', { class: 'wstrip' }, name, gainEl, mute, h('div', { class: 'fz' }, fader.el), db));
       ctl.set(base + '/fdr', v => { fader.set(v); db.textContent = fmt.db(v); });
       ctl.set(base + '/mute', v => mute.classList.toggle('on', !!v));
       ctl.set(base + '/name', v => name.textContent = v || `${bank.toUpperCase()} ${n}`);
@@ -42,7 +53,7 @@
   function query() {
     if (!S.info?.wing?.ip) return;
     const addrs = [];
-    for (let n = 1; n <= BANKS[bank]; n++) addrs.push(`/${bank}/${n}/fdr`, `/${bank}/${n}/mute`, `/${bank}/${n}/name`);
+    for (let n = 1; n <= BANKS[bank]; n++) addrs.push(`/${bank}/${n}/fdr`, `/${bank}/${n}/mute`, `/${bank}/${n}/name`, ...(bank === 'ch' ? [`/ch/${n}/in/set/$g`] : []));
     send({ t: 'wing', a: 'query', addrs });
   }
   on('wingval', m => { checkBack(m.addr, m.v); const f = ctl.get(m.addr); if (f) f(m.v); });

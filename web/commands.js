@@ -278,20 +278,22 @@
     card.classList.add('wide');
     const lists = window.SAMPLES || await loadSamples() || { builtin: [], user: [] };
     const all = [...lists.builtin, ...lists.user];
-    const kinds = { kick: 'kick', snare: 'snare', tom: 'tom' };
-    const guess = c => kinds[c.type] || (/kick|bd\b|bass ?drum/i.test(c.name) ? 'kick' : /snare|sd\b/i.test(c.name) ? 'snare' : /tom/i.test(c.name) ? 'tom' : null);
+    const kinds = { kick: 'kick', snare: 'snare', tom: 'tom', hihat: 'hat', overhead: 'cym' };
+    const guess = c => kinds[c.type] || (/kick|bd\b|bass ?drum/i.test(c.name) ? 'kick' : /snare|sd\b/i.test(c.name) ? 'snare' : /tom/i.test(c.name) ? 'tom'
+      : /hat|hh\b/i.test(c.name) ? 'hat' : /cym|crash|ride|china|splash|\boh\b|overhead/i.test(c.name) ? 'cym' : null);
     const drums = S.mixer.order.map(i => ({ i, c: S.mixer.channels[i], k: guess(S.mixer.channels[i]) })).filter(x => x.k);
     if (!drums.length) {
-      card.append(h('h3', {}, 'Drum triggers'), h('p', { class: 'hint' }, 'No kick, snare or tom channels found. Set a channel’s instrument to Kick, Snare or Tom, or add a Drum trigger from its effects.'),
+      card.append(h('h3', {}, 'Drum triggers'), h('p', { class: 'hint' }, 'No drum channels found. Set a channel’s instrument to Kick, Snare, Tom, Hi-hat or Overhead, or add a Drum trigger from its effects.'),
         h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close')));
       return;
     }
     const toms = ['tom-high', 'tom-mid', 'tom-floor'];
     let ti = 0;
-    const DET = { kick: [30, 150], snare: [150, 8000], tom: [60, 1200] };
+    const DET = { kick: [30, 150], snare: [150, 8000], tom: [60, 1200], hat: [3000, 16000], cym: [4000, 16000] };
     const rows = drums.map(({ i, c, k }) => {
       const cur = (c.chain || []).find(m => m.type === 'trigger');
-      const def = k === 'kick' ? 'builtin:kick-punchy' : k === 'snare' ? 'builtin:snare-tight' : 'builtin:' + toms[Math.min(ti++, 2)];
+      const def = k === 'kick' ? 'builtin:kick-punchy' : k === 'snare' ? 'builtin:snare-tight' : k === 'hat' ? 'builtin:hat-closed'
+        : k === 'cym' ? (/ride/i.test(c.name) ? 'builtin:ride' : 'builtin:crash') : 'builtin:' + toms[Math.min(ti++, 2)];
       const on = h('input', { type: 'checkbox', checked: !!cur && cur.on !== false });
       const smp = h('select', {}, ...all.map(([v, l]) => h('option', { value: v, selected: v === (cur?.sample || def) }, l)));
       const mix = h('input', { type: 'range', min: 0, max: 100, value: cur?.mix ?? 50 });
@@ -314,7 +316,8 @@
           const [lo, hi] = DET[r.k];
           const set = { on: true, sample: r.smp.value, mix: +r.mix.value };
           if (at >= 0) chain[at] = { ...chain[at], ...set };
-          else chain.unshift(makeModule('trigger', { ...set, det_lo: lo, det_hi: hi, sensitivity: r.k === 'tom' ? 40 : 50 }));
+          else chain.unshift(makeModule('trigger', { ...set, det_lo: lo, det_hi: hi, sensitivity: r.k === 'tom' ? 40 : r.k === 'cym' ? 45 : 50,
+            retrigger: r.k === 'cym' ? 90 : r.k === 'hat' ? 45 : 60, confirm: r.k === 'cym' ? 40 : 0 }));
           setParam(['channels', r.i, 'chain'], chain);
           n++;
         }

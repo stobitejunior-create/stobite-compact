@@ -90,7 +90,7 @@ DEFAULTS = {
     "limiter": lambda: {"ceiling": -1.0, "threshold": 0, "gain": 0, "lookahead": 1.5, "release": 150, "truepeak": True},
     "plugin": lambda: {"path": "", "name": "Plug-in", "params": {}},
     "trigger": lambda: {"sample": "builtin:kick-punchy", "sample2": "", "volume2": -6, "sensitivity": 50, "retrigger": 60,
-                        "dynamics": 70, "volume": 0, "tune": 0, "mix": 50, "det_lo": 30, "det_hi": 8000, "reject": 16},
+                        "dynamics": 70, "volume": 0, "tune": 0, "mix": 50, "det_lo": 30, "det_hi": 8000, "reject": 16, "confirm": 0},
     "proximity": lambda: {"mode": "tame", "amount": 6, "freq": 200},
     "rider": lambda: {"target": -20, "range": 6, "speed": 300, "floor": -50},
     "bass": lambda: {"freq": 90, "amount": 50, "original": 0, "mix": 100},

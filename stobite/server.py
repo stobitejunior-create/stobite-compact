@@ -376,7 +376,10 @@ class App:
                 where = delete_session(body["name"])
                 return web.json_response({"ok": True, "where": where})
             if name == "session-open":
-                e.open_session(body["name"])
+                loop = asyncio.get_running_loop()
+                say = lambda fr, msg: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(
+                    self.broadcast({"t": "loading", "progress": round(fr, 3), "msg": msg})))
+                await loop.run_in_executor(None, e.open_session, body["name"], say)
                 return web.json_response({"ok": True})
             if name == "save":
                 e.save()
@@ -452,7 +455,7 @@ class App:
                 return web.json_response({"start": rec.start_pos, "n": n, "peaks": chunk})
             if name == "peaks":
                 spp = int(q.get("spp", 1024))
-                data = e.session.peaks(q["file"], spp).tobytes()
+                data = (await asyncio.get_running_loop().run_in_executor(None, e.session.peaks, q["file"], spp)).tobytes()
                 return web.Response(body=data, content_type="application/octet-stream",
                                     headers={"Cache-Control": "max-age=3600"})
             if name == "plugins":

@@ -29,6 +29,7 @@ function connect() {
       case 'wing': S.wing[m.addr] = m.v; emit('wingval', m); break;
       case 'assist': emit('assist', m); break;
       case 'valign': emit('valign', m); break;
+      case 'loading': emit('loading', m); break;
       case 'compare': S.compare = m.on; S.compareMatch = m.match; emit('compare'); break;
       case 'error': toast(m.msg, true); break;
       case 'toast': toast(m.msg, false, m.long ? 9000 : 0); break;
@@ -134,7 +135,11 @@ function tc(samples) {
 }
 
 // ------------------------------------------------------------ transport
-const tr = (a, extra = {}) => send({ t: 'transport', a, ...extra });
+const tr = (a, extra = {}) => {
+  // moving the playhead mid-take would cut the recording short: say so instead
+  if (a === 'locate' && (S.tr?.recording || S.tr?.counting)) return toast('Recording: stop first to move the playhead');
+  send({ t: 'transport', a, ...extra });
+};
 $('#btnPlay').onclick = () => tr('toggle');
 $('#btnStop').onclick = () => S.tr.playing || S.tr.recording ? tr('stop') : tr('locate', { pos: 0 });
 $('#btnRec').onclick = () => {

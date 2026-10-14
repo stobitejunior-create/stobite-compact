@@ -34,8 +34,21 @@
     try { items = await api('projects'); } catch (e) { items = []; }
     render();
   }
+  // a bar while a project opens: reading its tracks' waveforms is most of the wait on a long service
+  function loader(name) {
+    const bar = h('i'), msg = h('span', {}, 'Opening');
+    const el = h('div', { class: 'loader' }, h('div', { class: 'loader-card' }, h('b', {}, name), msg, h('div', { class: 'loader-bar' }, bar)));
+    document.body.append(el);
+    let alive = true;
+    on('loading', m => { if (!alive) return; bar.style.width = Math.round(m.progress * 100) + '%'; msg.textContent = m.msg; });
+    return () => { alive = false; el.remove(); };
+  }
   async function openProject(name) {
-    if (S.session?.name !== name) { await tryApi('session-open', { name }); toast('Opened ' + name); }
+    if (S.session?.name !== name) {
+      const done = loader(name);
+      try { await tryApi('session-open', { name }); } finally { done(); }
+      toast('Opened ' + name);
+    }
     hideWelcome();
     showView('edit');
   }
