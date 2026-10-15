@@ -769,3 +769,5 @@ body.locked .view.on::before { content: "Mix locked for the service"; position: 
 .loader-card span { font-size: 12px; color: var(--dim); }
 .loader-bar { height: 6px; border-radius: 3px; background: var(--bg4); overflow: hidden; }
 .loader-bar i { display: block; height: 100%; width: 2%; background: var(--accent, #f76b15); transition: width .15s; }
+
+.sname-edit { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; font-weight: 600; text-align: center; padding: 3px 2px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg2); color: var(--text); }

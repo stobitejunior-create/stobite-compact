@@ -1,12 +1,12 @@
 #!/bin/bash
-# update compact — one command to ship a new version of Stobite Compact.
+# rebuild-compact — one command to ship a new version of Stobite Compact.
 #
-#   update compact                        # next patch version (v1.1.0 -> v1.1.1), Mac builds only
-#   update compact "Added auto-tune"      # same, with your own description
-#   update compact --minor "Big update"   # v1.1.x -> v1.2.0
-#   update compact --windows "..."        # also build the Windows installer on GitHub (uses Actions minutes)
-#   update compact --windows-only         # just build Windows for the latest version (no new version)
-#   update compact --no-intel "..."       # skip the Intel Mac build (quicker)
+#   rebuild-compact                        # next patch version (v1.1.0 -> v1.1.1), Mac builds only
+#   rebuild-compact "Added auto-tune"      # same, with your own description
+#   rebuild-compact --minor "Big update"   # v1.1.x -> v1.2.0
+#   rebuild-compact --windows "..."        # also build the Windows installer on GitHub (uses Actions minutes)
+#   rebuild-compact --windows-only         # just build Windows for the latest version (no new version)
+#   rebuild-compact --no-intel "..."       # skip the Intel Mac build (quicker)
 #
 # The Mac DMGs (Apple silicon + Intel) are built here on this Mac, so a normal release uses no
 # GitHub Actions minutes. GitHub only builds the Windows installer when you ask with --windows,
@@ -94,7 +94,7 @@ bold "3/5  Building the Mac apps on this Mac (a few minutes)"
 rm -f dist/*.dmg
 ./build_mac.sh || fail "The Apple silicon build failed (see above). Nothing was pushed."
 if [[ $intel == 1 && "$(uname -m)" == "arm64" ]]; then
-  ./build_mac.sh intel || fail "The Intel build failed (see above). Nothing was pushed. Try: update compact --no-intel"
+  ./build_mac.sh intel || fail "The Intel build failed (see above). Nothing was pushed. Try: rebuild-compact --no-intel"
 fi
 
 # ---- commit + push + tag (a tag no longer starts any GitHub build)
@@ -123,7 +123,7 @@ if [[ $windows == 1 ]]; then
   windows_build "$next"
 else
   echo "   Windows: not built (saves GitHub minutes). Build it on the Windows PC with build_windows.bat,"
-  echo "            or here with:  update compact --windows-only"
+  echo "            or here with:  rebuild-compact --windows-only"
 fi
 
 # ---- install on this Mac

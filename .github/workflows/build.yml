@@ -1,5 +1,5 @@
 # Builds the Windows installer .exe on GitHub's machines and adds it to a release.
-# It only runs when asked (to save GitHub Actions minutes): `update compact --windows` starts it,
+# It only runs when asked (to save GitHub Actions minutes): `rebuild-compact --windows` starts it,
 # or the Run workflow button on the Actions tab. The Mac DMGs are built on the Mac itself
 # (build_mac.sh) and never use GitHub minutes.
 name: Build apps

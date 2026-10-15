@@ -20,10 +20,10 @@ Keep the USB cable under 5 m, or use a powered/active extension.
 Install the command once (see below), then from any Terminal:
 
 ```
-update compact "What changed"
+rebuild-compact "What changed"
 ```
 
-It checks the code, builds both Mac DMGs (Apple silicon + Intel) **on this Mac**, commits and pushes, tags the next version, publishes the GitHub release with the DMGs, copies them to `~/Downloads/Stobite Compact vX.Y.Z`, and offers to install the new Mac app. This uses no GitHub Actions minutes. Windows: `update compact --windows "..."` also builds the installer on GitHub (Windows only, uses minutes), `update compact --windows-only` builds it for the latest version, or run `build_windows.bat` on the Windows PC for free. `--minor` for bigger releases, `--no-intel` to skip the Intel build.
+It checks the code, builds both Mac DMGs (Apple silicon + Intel) **on this Mac**, commits and pushes, tags the next version, publishes the GitHub release with the DMGs, copies them to `~/Downloads/Stobite Compact vX.Y.Z`, and offers to install the new Mac app. This uses no GitHub Actions minutes. Windows: `rebuild-compact --windows "..."` also builds the installer on GitHub (Windows only, uses minutes), `rebuild-compact --windows-only` builds it for the latest version, or run `build_windows.bat` on the Windows PC for free. `--minor` for bigger releases, `--no-intel` to skip the Intel build.
 
 ## Run it
 
@@ -32,7 +32,7 @@ It checks the code, builds both Mac DMGs (Apple silicon + Intel) **on this Mac**
 | Mac app | `dist/Stobite Compact.app`: drag it to Applications. On first launch, click **Allow** when macOS asks for microphone access (that is how it hears the WING). |
 | Mac from source | double-click `Start Stobite Compact.command` |
 | Windows from source | double-click `start_windows.bat` (needs Python 3.12 from python.org) |
-| Build Windows .exe | run `build_windows.bat` on a Windows PC (with Inno Setup 6 it also makes the Setup.exe), or `update compact --windows-only` (GitHub, Windows only) |
+| Build Windows .exe | run `build_windows.bat` on a Windows PC (with Inno Setup 6 it also makes the Setup.exe), or `rebuild-compact --windows-only` (GitHub, Windows only) |
 | Rebuild Mac app | `./build_mac.sh` |
 
 `run.py --no-browser` runs it headless. The phone remote still works.
@@ -108,6 +108,8 @@ The **phone remote** is off by default (Setup). When off, only this computer can
 **Downloads:** each release has `Stobite-Compact-mac-Apple-Silicon.dmg` (M1–M4 Macs), `Stobite-Compact-mac-Intel.dmg` (Intel Macs, macOS 11 Big Sur or newer) and the Windows `Setup.exe`. On a Mac, Apple menu → About This Mac shows Chip (Apple) or Processor (Intel).
 
 Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording uses about 0.52 GB per channel per hour (24 channels for 2 hours is about 25 GB; all 48 is about 25 GB per hour), so disarm unused channels.
+
+**Full guide:** [HOW-EVERYTHING-WORKS.md](HOW-EVERYTHING-WORKS.md) explains every processor, how it works and where its code is.
 
 ## Shortcuts
 

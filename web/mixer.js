@@ -162,7 +162,7 @@
     const P = (...p) => ['channels', c, ...p];
     const el = h('div', { class: 'strip ch', draggable: 'true' });
     const ic = h('button', { class: 'sicon', title: 'What is on this channel? (instrument library)', onclick: () => pickFor(c) }, icon(ch.icon || 'input', 20));
-    const name = h('div', { class: 'sname', style: `background:${ch.color}`, onclick: () => openEditor(c), title: `Open ${ch.name}` }, ch.name);
+    const name = h('div', { class: 'sname', style: `background:${ch.color}`, onclick: () => openEditor(c), ondblclick: e => { e.stopPropagation(); renameChannel(c, name); }, title: `Click to open · double-click to rename` }, ch.name);
     const io = h('div', { class: 'io' },
       h('span', { class: 'inlbl', title: 'Input (change it in the channel editor)' }, inputLabel(ch.input)),
       h('span', { class: 'outlbl', style: `--c:${destColor(ch.out)}`, title: 'Goes to this bus' }, '→ ' + destName(ch.out)),
@@ -376,17 +376,35 @@
 
   function soloHint() { $('#soloHint').textContent = S.mixer.channels.some(c => c.solo) ? 'SOLO on: other channels are silent in the mix' : ''; }
 
+  // type your own label right on the strip (Enter saves, Esc cancels, empty goes back to "Ch N")
+  window.renameChannel = (c, el) => {
+    const ch = S.mixer.channels[c];
+    const inp = h('input', { class: 'sname-edit', value: ch.name, maxlength: 24 });
+    const done = save => {
+      if (!inp.isConnected) return;
+      const v = inp.value.trim();
+      if (save) setParam(['channels', c, 'name'], v || `Ch ${c + 1}`);
+      inp.replaceWith(el);
+      el.textContent = S.mixer.channels[c].name;
+    };
+    inp.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') done(true); else if (e.key === 'Escape') done(false); };
+    inp.onblur = () => done(true);
+    inp.onclick = e => e.stopPropagation();
+    el.replaceWith(inp);
+    inp.focus(); inp.select();
+  };
+
   function pickFor(c) {
     pickInstrument(S.mixer.channels[c].type, (it, opt) => {
       const P = (...p) => ['channels', c, ...p];
       if (!it) { setParam(P('icon'), ''); setParam(P('type'), ''); return; }
       setParam(P('icon'), it.icon); setParam(P('type'), it.key); setParam(P('color'), it.color);
-      if (/^Ch \d+$/.test(S.mixer.channels[c].name)) setParam(P('name'), it.label);
       if (opt.preset) {
+        if (/^Ch \d+$/.test(S.mixer.channels[c].name)) setParam(P('name'), it.label);   // only with a preset: names are yours
         if (it.bus) setParam(P('out'), it.bus);
         if (it.preset) applyChannelPreset(c, it.preset);
       }
-      toast(`${S.mixer.channels[c].name}: ${it.label}${opt.preset && it.preset ? ' (preset loaded, routed to ' + destName(it.bus) + ')' : ''}`);
+      toast(opt.preset && it.preset ? `${S.mixer.channels[c].name}: ${it.label} (preset loaded, routed to ${destName(it.bus)})` : `${S.mixer.channels[c].name}: icon set, nothing added`);
       if (edTarget === c) openEditor(c);
     });
   }

@@ -83,7 +83,7 @@ function pickInstrument(current, onPick) {
   const lib = (window.CATALOG && CATALOG.instruments) || [];
   modal((card, close) => {
     const grid = h('div', { class: 'inst-grid' });
-    const usePreset = h('input', { type: 'checkbox', checked: true });
+    const usePreset = h('input', { type: 'checkbox', checked: false });
     const q = h('input', { placeholder: 'Search… (kick, vocal, keys)', style: 'width:100%' });
     const render = () => {
       grid.innerHTML = '';
@@ -96,9 +96,9 @@ function pickInstrument(current, onPick) {
     q.oninput = render;
     card.classList.add('wide');
     card.append(h('h3', {}, 'What is on this channel?'),
-      h('p', { class: 'hint' }, 'Sets the icon, name and colour, sends it to the right bus, and (optionally) loads a gentle starting preset you can adjust.'),
+      h('p', { class: 'hint' }, 'Sets only the icon and colour. Nothing is added to the channel: no filters, no effects, no routing. You start from scratch.'),
       q, grid,
-      h('label', { class: 'chk' }, usePreset, 'Also load the starting preset and bus routing'),
+      h('label', { class: 'chk' }, usePreset, 'Also load a starting preset and bus routing (optional)'),
       h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Cancel')));
     render();
     setTimeout(() => q.focus(), 50);
