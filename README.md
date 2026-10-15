@@ -109,6 +109,8 @@ The **phone remote** is off by default (Setup). When off, only this computer can
 
 Sessions, recordings, scenes and exports are saved in `~/Stobite Compact/`. Recording uses about 0.52 GB per channel per hour (24 channels for 2 hours is about 25 GB; all 48 is about 25 GB per hour), so disarm unused channels.
 
+**Taking your settings to another computer:** Mixer → Mix settings → *Save a settings file* (one small file, no audio), copy it over, then *Open a settings file…* there.
+
 **Full guide:** [HOW-EVERYTHING-WORKS.md](HOW-EVERYTHING-WORKS.md) explains every processor, how it works and where its code is.
 
 ## Shortcuts

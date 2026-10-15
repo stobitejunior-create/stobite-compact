@@ -225,3 +225,57 @@ def temp_path(suffix):
     fd, p = tempfile.mkstemp(suffix=suffix)
     os.close(fd)
     return p
+
+
+# ---------------------------------------------------------------- settings only (one file, no audio)
+
+SET_EXT = ".stobite-settings"
+
+
+def _user_samples(state):
+    """Names of the user's own drum samples a mix uses (they live outside the mix, in Samples/)."""
+    names = set()
+    for owner in [*state.get("channels", []), *state.get("buses", []), state.get("master", {})]:
+        for m in owner.get("chain") or []:
+            for k in ("sample", "sample2"):
+                v = m.get(k) or ""
+                if m.get("type") == "trigger" and v.startswith("user:"):
+                    names.add(v[5:])
+    return names
+
+
+def export_settings(state, name, outdir):
+    """The whole mix (every channel, bus, effect, the master, tempo, key, DCAs, routing) as ONE small
+    file, with no audio. Your own drum samples used by a trigger are packed inside."""
+    import base64
+    samples = {}
+    for n in sorted(_user_samples(state)):
+        p = os.path.join(home_dir(), "Samples", os.path.basename(n))
+        if os.path.isfile(p) and os.path.getsize(p) < 30 * 1024 * 1024:
+            with open(p, "rb") as f:
+                samples[os.path.basename(n)] = base64.b64encode(f.read()).decode()
+    data = {"kind": "stobite-settings", "version": 1, "saved": time.strftime("%Y-%m-%d %H:%M"), "name": name,
+            "mixer": copy.deepcopy(state), "samples": samples}
+    os.makedirs(outdir, exist_ok=True)
+    path = os.path.join(outdir, _clean(name) + SET_EXT)
+    with open(path, "w") as f:
+        json.dump(data, f)
+    return path
+
+
+def read_settings(raw):
+    """Parse a settings file; unpacks any drum samples into Samples/ (never overwrites one that exists).
+    Returns (mixer state, name)."""
+    import base64
+    data = json.loads(raw)
+    if data.get("kind") != "stobite-settings" or not isinstance(data.get("mixer"), dict):
+        raise ValueError("this isn't a Stobite settings file")
+    sd = os.path.join(home_dir(), "Samples")
+    for n, b in (data.get("samples") or {}).items():
+        n = os.path.basename(n)
+        p = os.path.join(sd, n)
+        if n.lower().endswith((".wav", ".aif", ".aiff", ".flac", ".mp3")) and not os.path.exists(p):
+            os.makedirs(sd, exist_ok=True)
+            with open(p, "wb") as f:
+                f.write(base64.b64decode(b))
+    return data["mixer"], data.get("name") or "Settings"

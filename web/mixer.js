@@ -539,7 +539,29 @@
       const data = await tryApi('settings-upload', fd);
       close(); mapMix(data);
     } });
+    // ONE file with every setting and no audio: for taking the mix to another computer
+    const carry = h('div', { class: 'carry' });
+    const fileIn = h('input', { type: 'file', hidden: true, accept: '.stobite-settings,application/json', onchange: async e => {
+      const f = e.target.files[0]; if (!f) return;
+      if (!confirm(`Replace this computer's mix settings with “${f.name}”?\n\nEvery channel, bus, effect and the master change. Undo (⌘/Ctrl+Z in the Mixer) puts the old mix back. Recordings aren't touched.`)) return;
+      const fd = new FormData(); fd.append('file', f, f.name);
+      const r = await tryApi('settings-import', fd);
+      toast(`Loaded “${r.name}”. Undo brings back the previous mix.`); close();
+    } });
+    const saveFile = async () => {
+      const r = await tryApi('settings-export', { name: name.value });
+      carry.innerHTML = '';
+      const local = ['localhost', '127.0.0.1'].includes(location.hostname);
+      carry.append(h('p', { class: 'hint' }, `Saved “${r.file}”. Copy this one file to the other computer (USB stick, AirDrop, email), then open it there with “Open a settings file…”.`),
+        local ? h('button', { class: 'btn', onclick: () => api('reveal', undefined, '?what=settings') }, 'Show the file') :
+          h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(r.path), style: 'text-decoration:none;display:inline-flex;align-items:center' }, 'Download'));
+    };
     card.append(h('h3', {}, 'Mix settings'),
+      h('h4', {}, 'Take all settings to another computer'),
+      h('p', { class: 'hint' }, 'One small file with every channel, effect, bus and the master. No recordings, so it is tiny. Your own drum samples used by a trigger are packed inside.'),
+      h('div', { class: 'frow' },
+        h('button', { class: 'btn accent', onclick: saveFile }, icon('export', 14), 'Save a settings file'),
+        h('button', { class: 'btn', onclick: () => fileIn.click() }, icon('import', 14), 'Open a settings file…'), fileIn), carry,
       h('p', { class: 'hint' }, 'Carry your sound between computers. Saving makes a folder with one file per channel (e.g. “03 Piano.stobite-channel”) plus one for the buses, effects and master. Each channel file also goes into your sound library, so you can put “Piano” on any piano later.'),
       h('h4', {}, 'Templates: a whole sound in one go'), tplList,
       h('h4', {}, 'Save this mix'),

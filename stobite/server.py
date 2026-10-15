@@ -496,6 +496,31 @@ class App:
                 chans = [d for d in out if d.get("kind") == "stobite-channel"]
                 glob_ = next((d for d in out if d.get("kind") == "stobite-mix"), None)
                 return web.json_response({"channels": chans, "globals": glob_})
+            if name == "settings-export":
+                path = portable.export_settings(e.mixer.snapshot(), body.get("name") or (e.session.name + " settings"), e.export_dir())
+                self.last_settings = path
+                return web.json_response({"path": path, "file": os.path.basename(path)})
+            if name == "settings-import":
+                reader = await request.multipart()
+                raw = None
+                async for part in reader:
+                    if part.filename:
+                        raw = await part.read(decode=False)
+                if raw is None:
+                    raise RuntimeError("No settings file received")
+                try:
+                    state, label = portable.read_settings(raw)
+                    from .mixer import migrate
+                    state = migrate(state, e.nch)
+                except Exception as ex:
+                    raise RuntimeError(f"Can't open that file: {ex}")
+                self.mix_undo.append(e.mixer.snapshot())      # one step back puts the old mix back
+                del self.mix_undo[:-50]
+                self.mix_redo.clear()
+                e.mixer.replace_state(state)
+                e.dirty = True
+                await self._push("mixer")
+                return web.json_response({"name": label})
             if name == "master-assist":
                 # analyse the project and build the master chain in the background (about a minute)
                 if getattr(self, "assist_busy", False):
@@ -716,6 +741,7 @@ class App:
                 what = q.get("what")
                 path = (e.export_job["file"] if (what == "export" and e.export_job) else
                         portable.presets_dir() if what == "presets" else
+                        getattr(self, "last_settings", None) if what == "settings" else
                         os.path.join(portable.presets_dir("Mixes"), q.get("name", "")) if what == "mix" else e.session.dir)
                 if request.remote in ("127.0.0.1", "::1") and path:
                     if sys.platform == "darwin":
