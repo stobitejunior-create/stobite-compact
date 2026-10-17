@@ -215,7 +215,7 @@
     const n = (S.mixer.dcas || []).length;
     const name = prompt('Name for the DCA (e.g. Vocals, Band, Drums)', ['Vocals', 'Band', 'Drums', 'Keys'][n] || 'DCA ' + (n + 1));
     if (!name) return;
-    setParam(['dcas'], [...(S.mixer.dcas || []), { id: 'dca' + Date.now().toString(36), name, color: DCA_COLORS[n % DCA_COLORS.length], fader: 0, mute: false, members: [] }]);
+    setParam(['dcas'], [...(S.mixer.dcas || []), { id: 'dca' + Date.now().toString(36), name, color: DCA_COLORS[n % DCA_COLORS.length], fader: 0, mute: false, solo: false, members: [] }]);
     buildMixer(); editDca(n);
   }
   function editDca(i) {
@@ -247,7 +247,7 @@
       h('div', { class: 'sname', style: `background:${g.color}`, onclick: () => editDca(i), title: 'Choose channels, rename or delete' }, g.name),
       h('div', { class: 'dca-members', title: names.join(', ') }, names.length ? `${names.length} channel${names.length > 1 ? 's' : ''}` : 'No channels yet'),
       h('div', { class: 'dca-names' }, ...names.slice(0, 8).map(n => h('span', {}, n)), names.length > 8 ? h('span', {}, `+${names.length - 8}`) : null),
-      h('div', { class: 'row' }, muteBtn(P('mute'))),
+      h('div', { class: 'row' }, muteBtn(P('mute')), muteBtn(P('solo'), 's', 'S')),
       faderBlock(P('fader'), [], db), db);
     return el;
   }
@@ -355,17 +355,19 @@
   function mutedPaths() {
     const out = [];
     S.mixer.channels.forEach((c, i) => c.mute && out.push(['channels', i, 'mute']));
+    (S.mixer.dcas || []).forEach((g, i) => g.mute && out.push(['dcas', i, 'mute']));
     S.mixer.buses.forEach((b, i) => b.mute && out.push(['buses', i, 'mute']));
     S.mixer.fx.forEach((f, i) => f.mute && out.push(['fx', i, 'mute']));
     return out;
   }
-  window.clearSolos = () => { let n = 0; S.mixer.channels.forEach((c, i) => { if (c.solo) { setParam(['channels', i, 'solo'], false); n++; } }); emit('mixer'); toast(n ? `Cleared ${n} solo${n > 1 ? 's' : ''}` : 'Nothing soloed'); };
+  window.clearSolos = () => { let n = 0; S.mixer.channels.forEach((c, i) => { if (c.solo) { setParam(['channels', i, 'solo'], false); n++; } });
+    (S.mixer.dcas || []).forEach((g, i) => { if (g.solo) { setParam(['dcas', i, 'solo'], false); n++; } }); emit('mixer'); toast(n ? `Cleared ${n} solo${n > 1 ? 's' : ''}` : 'Nothing soloed'); };
   window.clearMutes = () => { const ps = mutedPaths(); ps.forEach(p => setParam(p, false)); emit('mixer'); toast(ps.length ? `Unmuted ${ps.length}` : 'Nothing muted'); };
   $('#btnClearSolo').onclick = clearSolos;
   $('#btnClearMute').onclick = clearMutes;
   function updateClear() {
     if (!S.mixer) return;
-    const ns = S.mixer.channels.filter(c => c.solo).length, nm = mutedPaths().length;
+    const ns = S.mixer.channels.filter(c => c.solo).length + (S.mixer.dcas || []).filter(g => g.solo).length, nm = mutedPaths().length;
     const bs = $('#btnClearSolo'), bm = $('#btnClearMute');
     bs.hidden = !ns; bs.textContent = `Clear solos (${ns})`;
     bm.hidden = !nm; bm.textContent = `Clear mutes (${nm})`;
@@ -374,7 +376,7 @@
   let clrTick = 0;
   on('meters', () => { if (++clrTick % 5 === 0 && S.view === 'mixer') updateClear(); });
 
-  function soloHint() { $('#soloHint').textContent = S.mixer.channels.some(c => c.solo) ? 'SOLO on: other channels are silent in the mix' : ''; }
+  function soloHint() { $('#soloHint').textContent = (S.mixer.channels.some(c => c.solo) || (S.mixer.dcas || []).some(g => g.solo)) ? 'SOLO on: other channels are silent in the mix' : ''; }
 
   // type your own label right on the strip (Enter saves, Esc cancels, empty goes back to "Ch N")
   window.renameChannel = (c, el) => {

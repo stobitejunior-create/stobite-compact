@@ -1192,6 +1192,8 @@ class Engine:
                     st["master"]["mute"] = False
                     if kind == "podcast" and opts.get("speechOnly"):
                         # just the speaking: channels on the Preaching bus or set up as preacher / host
+                        for g in st.get("dcas") or []:
+                            g["solo"] = False
                         for ch in st["channels"]:
                             ch["solo"] = False
                             if not (ch.get("out") == "speech" or ch.get("type") in postservice.SPEECH):

@@ -126,6 +126,8 @@ def assist(engine, target=-14.0, style="balanced", progress=lambda f, msg: None)
     base = engine.mixer.snapshot()
     for ch in base["channels"]:
         ch["solo"] = False          # a solo is for listening, not part of the mix being mastered
+    for g in base.get("dcas") or []:
+        g["solo"] = False
     windows = pick_windows(s, base)
     progress(0.05, "Finding the loudest parts")
 

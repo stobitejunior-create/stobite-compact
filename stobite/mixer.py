@@ -435,13 +435,15 @@ class Mixer:
         pre = np.array([dsp.db_to_lin(c["trim"]) * (-1 if c["phase"] else 1) for c in chs], dtype=np.float32)
         self._base = dict(fader=np.array([float(c["fader"]) for c in chs]), pan=np.array([float(c["pan"]) for c in chs]),
                           mute=np.array([bool(c["mute"]) for c in chs]), solo=np.array([bool(c["solo"]) for c in chs]))
-        dca_off, dca_mute = np.zeros(len(chs)), np.zeros(len(chs), bool)
+        dca_off, dca_mute, dca_solo = np.zeros(len(chs)), np.zeros(len(chs), bool), np.zeros(len(chs), bool)
         for g in st.get("dcas") or []:
             for c in g.get("members") or []:
                 if 0 <= int(c) < len(chs):
                     dca_off[int(c)] += float(g.get("fader", 0.0))
                     dca_mute[int(c)] |= bool(g.get("mute"))
+                    dca_solo[int(c)] |= bool(g.get("solo"))
         self._dca = (dca_off, dca_mute) if (dca_off.any() or dca_mute.any()) else None
+        self._dca_solo = dca_solo if dca_solo.any() else None    # soloing a DCA solos all its channels
         # delay per channel: automatic compensation (every channel waits for the slowest chain, so
         # e.g. a denoiser on one mic doesn't smear it against the others) + any alignment delay set by hand
         lat = np.array([0 if ch.get("bypass") else sum(effects.latency(m, self.fs) for m in ch.get("chain") or [] if m.get("on", True))
@@ -696,6 +698,7 @@ class Mixer:
         return 20 * np.log10(max(float(np.abs(sig).max()), 1e-9))
 
     # ------------------------------------------------------------- before / after
+    _dca_solo = None
     compare = False         # True: self.before_out holds the unprocessed mix (for headphones / speakers)
     before_out = None
     _e_after = 0.0
@@ -784,7 +787,7 @@ class Mixer:
             self.focus_ring.write(x[:, self.focus])
 
         # ---- fader, pan, routing matrix
-        solo = b["solo"]
+        solo = b["solo"] if self._dca_solo is None else (b["solo"] | self._dca_solo)
         live = ~(mute | (solo.any() & ~solo))
         fad = np.where(fader <= -89.9, 0.0, 10 ** (fader / 20)) * live
         pl, pr = dsp.pan_gains(pan)

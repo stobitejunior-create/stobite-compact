@@ -925,7 +925,7 @@
         h('label', { class: 'chk' }, pSpeech, 'Only the speaking (the Preaching bus / preacher mics), not the band'),
         h('p', { class: 'hint' }, 'Mono MP3 at podcast loudness (−16 LUFS), with the title, speaker and date that phones and podcast apps show.'));
       const soloNote = h('p', { class: 'warn-line' });
-      const soloed = (S.mixer?.channels || []).filter(c => c.solo).map(c => c.name);
+      const soloed = [...(S.mixer?.channels || []).filter(c => c.solo).map(c => c.name), ...(S.mixer?.dcas || []).filter(g => g.solo).map(g => 'DCA ' + g.name)];
       if (soloed.length) soloNote.append(`${soloed.join(', ')} ${soloed.length > 1 ? 'are' : 'is'} soloed, so the export would only contain ${soloed.length > 1 ? 'them' : 'it'}. `,
         h('button', { class: 'btn', onclick: () => { clearSolos(); soloNote.remove(); } }, 'Clear solos'));
       card.append(h('h3', {}, 'Export'),
