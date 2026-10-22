@@ -58,8 +58,10 @@ def yin(frame, fs, fmin, fmax, threshold=0.15):
     if 1 <= t < tmax:  # parabolic interpolation
         a, b, c = cmnd[t - 1], cmnd[t], cmnd[t + 1]
         den = a - 2 * b + c
-        t = t + (0.5 * (a - c) / den if abs(den) > 1e-12 else 0.0)
-    return fs / t, float(max(0.0, 1.0 - cmnd[int(round(t))]))
+        # a true minimum is within half a step; an almost flat curve would throw it far away
+        t = t + (float(np.clip(0.5 * (a - c) / den, -1.0, 1.0)) if abs(den) > 1e-12 else 0.0)
+    t = min(max(t, tmin), tmax)
+    return fs / t, float(max(0.0, 1.0 - cmnd[min(max(int(round(t)), 0), tmax)]))
 
 
 class PitchShifter:

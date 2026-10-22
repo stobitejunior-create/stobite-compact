@@ -771,3 +771,24 @@ body.locked .view.on::before { content: "Mix locked for the service"; position: 
 .loader-bar i { display: block; height: 100%; width: 2%; background: var(--accent, #f76b15); transition: width .15s; }
 
 .sname-edit { width: 100%; box-sizing: border-box; font: inherit; font-size: 11px; font-weight: 600; text-align: center; padding: 3px 2px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg2); color: var(--text); }
+
+.loader { transition: opacity .2s; }
+.loader.leaving { opacity: 0; }
+.loader-card.pc { width: min(420px, calc(100vw - 32px)); gap: 10px; padding: 22px 24px; }
+.loader-card.pc b { font-size: 15px; }
+.loader-card.pc small { color: var(--dim); margin-top: -6px; font-size: 12px; }
+.pc-pct { font-size: 40px; font-weight: 600; letter-spacing: -1px; line-height: 1; font-variant-numeric: tabular-nums; }
+.pc-msg { font-size: 13px; color: var(--text); min-height: 1.3em; }
+.pc-eta { font-size: 12px; color: var(--dim); min-height: 1.2em; }
+.pc-stages { list-style: none; margin: 2px 0 0; padding: 0; display: grid; gap: 5px; font-size: 12px; color: var(--faint); }
+.pc-stages li { display: flex; align-items: center; gap: 8px; }
+.pc-dot { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--line2); flex: none; }
+.pc-stages li.now { color: var(--text); }
+.pc-stages li.now .pc-dot { border-color: var(--accent); background: var(--accent); animation: pcpulse 1.2s ease-in-out infinite; }
+.pc-stages li.done { color: var(--dim); }
+.pc-stages li.done .pc-dot { background: var(--green); border-color: var(--green); }
+.pc-tip { font-size: 12px; color: var(--dim); border-top: 1px solid var(--line); padding-top: 10px; transition: opacity .25s; }
+@keyframes pcpulse { 50% { opacity: .35; } }
+
+.export-pill { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-line); cursor: pointer; font-variant-numeric: tabular-nums; }
+.export-pill[hidden] { display: none; }

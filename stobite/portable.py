@@ -187,10 +187,17 @@ def export_project(session, mixer_state, progress=lambda f: None, outdir=None):
     return out
 
 
-def import_project(path):
-    """Unpack a .stobite file into Sessions/ and return the session name."""
+def import_project(path, progress=lambda frac, msg: None):
+    """Unpack a .stobite file into Sessions/ and return the session name.
+    progress(fraction, text) is called as the recordings are copied out."""
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
+        total = sum(i.file_size for i in z.infolist()) or 1
+        done = 0
+        gb = lambda n: f"{n / 1e9:.1f}" if total >= 1e9 else f"{n / 1e6:.0f} MB"
+        unit = " GB" if total >= 1e9 else ""
+        last = 0.0
+        progress(0.0, "Checking the file")
         if "session.json" not in names:
             raise RuntimeError("That file isn't a Stobite Compact project (no session.json inside).")
         meta = json.loads(z.read("session.json"))
@@ -210,7 +217,16 @@ def import_project(path):
                 continue
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with z.open(n) as src, open(target, "wb") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
+                while True:
+                    chunk = src.read(1 << 20)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if now - last >= 0.15 or done >= total:      # about 7 updates a second is plenty
+                        last = now
+                        progress(done / total, f"Unpacking {gb(done)} of {gb(total)}{unit}")
     # the copy carries its own name
     sj = os.path.join(dest, "session.json")
     with open(sj) as f:

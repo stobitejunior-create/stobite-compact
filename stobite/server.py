@@ -56,6 +56,7 @@ class App:
     def __init__(self):
         self.engine = Engine()
         self.clients = set()
+        self.audio_clients = set()       # windows / phones that asked to hear the mix
         self.loop = None
         self.wing = wingmod.WingBridge(on_update=self._wing_update)
         self.want_spectrum = False
@@ -86,7 +87,7 @@ class App:
         elif kind == "notice":
             await self.broadcast({"t": "toast", "msg": e.notice, "long": True})
         elif kind == "export":
-            await self.broadcast({"t": "export", "job": e.export_job})
+            await self.broadcast({"t": "export", "job": e.export_job_public()})
 
     async def broadcast(self, msg, skip=None):
         data = json.dumps(msg)
@@ -188,6 +189,51 @@ class App:
                 msg["ex"] = round(e.export_job["progress"], 3)
             await self.broadcast(msg)
 
+    def _loading(self, loop, stage):
+        """A progress callback for a worker thread: tells every window how far a long job has got."""
+        return lambda fr, msg: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(
+            self.broadcast({"t": "loading", "stage": stage, "progress": round(fr, 3), "msg": msg})))
+
+    def _audio_flag(self):
+        self.engine.remote_audio = bool(self.audio_clients)
+        if not self.audio_clients:
+            self.engine.remote_q.clear()
+
+    async def audio_loop(self):
+        """Sends the mix (16-bit stereo PCM, binary frames) to every window that is listening."""
+        e = self.engine
+        sent_sr = None
+        while True:
+            await asyncio.sleep(0.04)
+            if not self.audio_clients:
+                continue
+            if sent_sr != e.sr:
+                sent_sr = e.sr
+                await self.broadcast_to(self.audio_clients, {"t": "audio", "sr": e.sr})
+            chunks = []
+            try:
+                while True:
+                    chunks.append(e.remote_q.popleft())
+            except IndexError:
+                pass
+            if not chunks:
+                continue
+            data = b"".join(chunks)
+            for w in list(self.audio_clients):
+                try:
+                    await asyncio.wait_for(w.send_bytes(data), 0.5)
+                except Exception:
+                    self.audio_clients.discard(w)
+            self._audio_flag()
+
+    async def broadcast_to(self, targets, msg):
+        txt = json.dumps(msg)
+        for w in list(targets):
+            try:
+                await w.send_str(txt)
+            except Exception:
+                targets.discard(w)
+
     # ------------------------------------------------------------- websocket
     async def ws(self, request):
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=8 * 1024 * 1024)
@@ -208,13 +254,15 @@ class App:
                     await ws.send_str(json.dumps({"t": "error", "msg": str(ex)}))
         finally:
             self.clients.discard(ws)
+            self.audio_clients.discard(ws)
+            self._audio_flag()
         return ws
 
     # Service lock: during a service nothing can change the mix or the edit by accident (from this
     # computer or a phone). Playing, stopping, recording and listening still work.
     LOCKED_WS = {"set", "edit", "undo", "redo", "mixundo", "mixredo", "wing"}
     OPEN_WHEN_LOCKED = {"samples", "sections", "find-sections", "align", "video-align", "devices", "info", "projects", "peaks", "rec-peaks", "rec-check", "catalog", "templates", "template",
-                        "settings-library", "mix-read", "plugin-params", "download", "reveal", "export", "export-estimate",
+                        "settings-library", "mix-read", "plugin-params", "download", "reveal", "export", "export-cancel", "export-estimate",
                         "save", "lock", "loudness-reset", "project-export"}
     locked = False
     LOCK_MSG = "The mix is locked for the service. Unlock it with the padlock at the top."
@@ -224,6 +272,14 @@ class App:
         t = m.get("t")
         if self.locked and t in self.LOCKED_WS:
             raise RuntimeError(self.LOCK_MSG)
+        if t == "audio":      # listen to the mix from this window (the phone remote has no speakers of its own to hear)
+            if m.get("on"):
+                self.audio_clients.add(ws)
+                await ws.send_str(json.dumps({"t": "audio", "sr": e.sr}))
+            else:
+                self.audio_clients.discard(ws)
+            self._audio_flag()
+            return
         if t == "set":
             now = time.time()
             if now - self.mix_ck > 1.0:  # one undo step per burst of moves
@@ -377,12 +433,14 @@ class App:
                 return web.json_response({"ok": True, "where": where})
             if name == "session-open":
                 loop = asyncio.get_running_loop()
-                say = lambda fr, msg: loop.call_soon_threadsafe(lambda: asyncio.ensure_future(
-                    self.broadcast({"t": "loading", "progress": round(fr, 3), "msg": msg})))
-                await loop.run_in_executor(None, e.open_session, body["name"], say)
+                await loop.run_in_executor(None, e.open_session, body["name"], self._loading(loop, "open"))
                 return web.json_response({"ok": True})
             if name == "save":
                 e.save()
+                return web.json_response({"ok": True})
+            if name == "export-cancel":
+                if e.export_job and e.export_job.get("running"):
+                    e.export_job["cancel"] = True
                 return web.json_response({"ok": True})
             if name == "export":
                 job = e.export(body.get("kind", "mix"), body.get("fmt", "wav"), body.get("start"), body.get("end"), body.get("target"),
@@ -586,7 +644,8 @@ class App:
             if name == "project-export":
                 if e.export_job and e.export_job.get("running"):
                     raise RuntimeError("An export is already running")
-                job = {"running": True, "progress": 0.0, "kind": "project", "file": None, "error": None}
+                job = {"running": True, "progress": 0.0, "kind": "project", "file": None, "error": None,
+                       "label": f"{e.session.name}: the whole project", "t0": time.time(), "cancel": False}
                 e.export_job = job
 
                 def run_export():
@@ -599,6 +658,7 @@ class App:
                     job["progress"] = 1.0
                     e.emit("export")
                 threading.Thread(target=run_export, daemon=True).start()
+                e.emit("export")
                 return web.json_response(job)
             if name == "project-import":
                 reader = await request.multipart()
@@ -611,11 +671,12 @@ class App:
                                 f.write(chunk)
                 if not tmp:
                     raise RuntimeError("No project file received")
+                loop = asyncio.get_running_loop()
                 try:
-                    sname = await asyncio.get_running_loop().run_in_executor(None, portable.import_project, tmp)
+                    sname = await loop.run_in_executor(None, portable.import_project, tmp, self._loading(loop, "unpack"))
                 finally:
                     os.remove(tmp)
-                e.open_session(sname)
+                await loop.run_in_executor(None, e.open_session, sname, self._loading(loop, "open"))
                 await self._push("mixer")
                 return web.json_response({"name": sname})
             if name == "plugin-params":
@@ -838,6 +899,7 @@ def build_app():
         if a.engine.cfg.get("wing_ip"):
             a.wing.connect(a.engine.cfg["wing_ip"])
         asyncio.ensure_future(a.meter_loop())
+        asyncio.ensure_future(a.audio_loop())
 
     async def on_stop(_):
         a.engine.stop()

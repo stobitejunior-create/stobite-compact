@@ -255,6 +255,10 @@ def input_candidates(name):
     return [first] + [d["id"] for d in rest]
 
 
+class ExportCancelled(Exception):
+    pass
+
+
 class Feeder:
     """Background thread that renders the timeline ahead of the audio callback."""
     CHUNK = 4096
@@ -362,6 +366,8 @@ class Engine:
         self.extra = ExtraInputs()   # other microphones / interfaces used by channels
         self.listen = ListenOut()    # the computer's own output, when the WING is the interface
         self.hp_eq = None            # headphone correction, made on first use
+        self.remote_audio = False    # a phone / browser is listening: copy the mix into remote_q
+        self.remote_q = collections.deque(maxlen=400)   # ~2 s of 256-sample blocks, as 16-bit stereo bytes
         self.stream_out = ListenOut()  # the mix for OBS / Zoom (usually "CABLE Input", a virtual cable)
         self.guard = LoopGuard(int(self.cfg["sr"]), self.nch)
         self.out_is_wing = False
@@ -612,6 +618,8 @@ class Engine:
                 self.load = max(self.load * 0.95, (time.perf_counter() - t0) / (frames / self.sr))
                 return
             self.stream_out.push(master)          # the stream never hears the click or the before/after compare
+            if self.remote_audio:                 # the phone remote's "listen here": the finished mix
+                self.remote_q.append((np.clip(master, -1.0, 1.0) * 32767).astype("<i2").tobytes())
             proc = master                         # what the WING gets back (if that's switched on)
             hear = master                         # what you listen on: headphones / speakers
             if mixer.compare and mixer.before_out is not None and mixer.before_out.shape == master.shape:
@@ -1142,14 +1150,17 @@ class Engine:
         end = int(end or s.length())
         if end <= start:
             raise RuntimeError("Nothing to export - the timeline is empty")
-        job = {"running": True, "progress": 0.0, "kind": kind, "file": None, "error": None}
-        self.export_job = job
         if fmt == "opus" and s.sr not in (8000, 12000, 16000, 24000, 48000):
             raise RuntimeError("Opus needs a 48 kHz session. Pick MP3 or another format.")
         if fmt == "mp3" and s.sr > 48000:
             raise RuntimeError("MP3 can't go above 48 kHz. Pick WAV, AIFF or FLAC.")
+        names = {"mix": "the mix", "tracks": "the tracks", "sections": "the songs", "podcast": "the podcast", "video": "audio for video"}
+        job = {"running": True, "progress": 0.0, "kind": kind, "file": None, "error": None,
+               "label": f"{s.name}: {names.get(kind, kind)}", "t0": time.time(), "cancel": False, "partial": []}
+        self.export_job = job
         opts = {"depth": str(depth), "kbps": kbps, "channels": 1 if int(channels or 2) == 1 else 2, **(extra or {})}
         threading.Thread(target=self._export, args=(job, kind, fmt, start, end, target, opts), daemon=True).start()
+        self.emit("export")          # every window learns an export has started (the end is announced too)
         return job
 
     def _export(self, job, kind, fmt, start, end, target=None, opts=None):
@@ -1171,7 +1182,10 @@ class Engine:
                 files = {t: sf.SoundFile(os.path.join(folder, f"{t + 1:02d} {names[t]['name']}.{ext}".replace("/", "-")),
                                          "w", s.sr, 1, **kw) for t in used}
                 pos = start
+                job["partial"] = [f.name for f in files.values()]
                 while pos < end:
+                    if job["cancel"]:
+                        raise ExportCancelled()
                     n = min(block, end - pos)
                     d = reader.render(pos, n, clips)
                     for t, f in files.items():
@@ -1210,6 +1224,16 @@ class Engine:
                         out[k:] = reader.render(0, n - k, clips)
                     return out
 
+                def run(mix, d):
+                    """One block through the mix. The last block of a range is any length; the processors want
+                    whole 32-sample steps, so it is padded with silence and trimmed again."""
+                    n = len(d)
+                    pad = (-n) % 256
+                    if pad:
+                        d = np.concatenate([d, np.zeros((pad, d.shape[1]), np.float32)])
+                    y = mix.process(d)
+                    return y[:n]
+
                 def mix_file(path, a, b, p0, p1, nout, kw, target, with_tail=True):
                     """Render [a, b) of the mix into path (two passes when matching a loudness target)."""
                     span = max(b - a, 1)
@@ -1220,9 +1244,11 @@ class Engine:
                         mix.set_master_limiters(False)
                         pos = a
                         while pos < b:
+                            if job["cancel"]:
+                                raise ExportCancelled()
                             n = min(block, b - pos)
                             mix.auto = self.auto_for(s, max(pos, 0))
-                            mix.process(rd(pos, n))
+                            run(mix, rd(pos, n))
                             pos += n
                             job["progress"] = p0 + (p1 - p0) * (pos - a) / span / passes
                         measured = mix.loud.integrated()
@@ -1231,12 +1257,15 @@ class Engine:
                         job["measured"], job["gain"] = round(measured, 1), round(gain, 1)
                     mix = make_mix(gain)
                     stop = b + (tail if with_tail else 0)
+                    job["partial"] = [*job.get("partial", []), path]
                     with sf.SoundFile(path, "w", s.sr, nout, **kw) as f:
                         pos = a
                         while pos < stop:
+                            if job["cancel"]:
+                                raise ExportCancelled()
                             n = min(block, stop - pos)
                             mix.auto = self.auto_for(s, max(pos, 0))
-                            y = mix.process(rd(pos, n) if pos < b else np.zeros((n, s.nch), np.float32))
+                            y = run(mix, rd(pos, n) if pos < b else np.zeros((n, s.nch), np.float32))
                             f.write(y.mean(axis=1) if nout == 1 else y)
                             pos += n
                             job["progress"] = min(p0 + (p1 - p0) * ((passes - 1) + (pos - a) / max(stop - a, 1)) / passes, p1)
@@ -1276,6 +1305,13 @@ class Engine:
                     job["lufs"] = mix_file(path, start, end, 0.0, 1.0, nout, kw, target, with_tail=(kind != "video" and opts.get("tail", True)))
                     job["file"], job["bytes"] = path, os.path.getsize(path)
             reader.close()
+        except ExportCancelled:
+            job["error"] = "Cancelled"
+            for p_ in job.get("partial", []):       # the half-finished files of this export
+                try:
+                    os.remove(p_)
+                except OSError:
+                    pass
         except Exception as ex:
             traceback.print_exc()
             job["error"] = str(ex)
@@ -1283,8 +1319,14 @@ class Engine:
         job["progress"] = 1.0
         self.emit("export")
 
+    def export_job_public(self):
+        j = self.export_job
+        if not j:
+            return None
+        return {k: j.get(k) for k in ("running", "progress", "kind", "file", "error", "label", "bytes", "lufs", "measured", "gain", "t0")}
+
     def info(self):
-        return {"status": self.status, "error": self.error, "cfg": {k: v for k, v in self.cfg.items() if k != "pin"},
+        return {"exportJob": self.export_job_public(), "status": self.status, "error": self.error, "cfg": {k: v for k, v in self.cfg.items() if k != "pin"},
                 "extraInputs": dict(self.extra.status),
                 "nIn": self.dev_ins, "inIsWing": bool(getattr(self, "in_is_wing", False)),
                 "hasPin": bool(self.cfg.get("pin")), "nch": self.nch, "sr": self.sr,

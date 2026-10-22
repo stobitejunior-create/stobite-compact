@@ -12,24 +12,27 @@ function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
   ws.onopen = () => { wsOpen = true; $('#netDot').className = 'dot ok'; };
   ws.onclose = () => { wsOpen = false; $('#netDot').className = 'dot bad'; setTimeout(connect, 1000); };
+  ws.binaryType = 'arraybuffer';
   ws.onmessage = ev => {
+    if (typeof ev.data !== 'string') { window.onAudioData && window.onAudioData(ev.data); return; }   // the mix, when listening here
     const m = JSON.parse(ev.data);
     switch (m.t) {
       case 'hello':
-        S.info = m.info; S.mixer = m.mixer; S.session = m.session; S.tr = m.transport; S.wing = m.wing || {};
+        S.info = m.info; S.exportJob = m.info?.exportJob || null; S.mixer = m.mixer; S.session = m.session; S.tr = m.transport; S.wing = m.wing || {};
         emit('info'); emit('mixer'); emit('session'); emit('transport'); emit('wing');
         break;
-      case 'm': S.meters = m; S.tr.playhead = m.ph; S.tr.playing = m.pl; S.tr.recording = m.rc; emit('meters', m); break;
+      case 'm': S.meters = m; if (m.ex != null && S.exportJob) S.exportJob.progress = m.ex; S.tr.playhead = m.ph; S.tr.playing = m.pl; S.tr.recording = m.rc; emit('meters', m); break;
       case 'set': applyPath(S.mixer, m.path, m.v); emit('set', m.path); break;
       case 'mixer': S.mixer = m.mixer; emit('mixer'); break;
       case 'session': S.session = m.session; emit('session'); break;
       case 'transport': Object.assign(S.tr, m); emit('transport'); break;
-      case 'info': S.info = m.info; emit('info'); break;
-      case 'export': emit('export', m.job); break;
+      case 'info': S.info = m.info; S.exportJob = m.info?.exportJob || S.exportJob; emit('info'); break;
+      case 'export': S.exportJob = m.job; emit('export', m.job); break;
       case 'wing': S.wing[m.addr] = m.v; emit('wingval', m); break;
       case 'assist': emit('assist', m); break;
       case 'valign': emit('valign', m); break;
       case 'loading': emit('loading', m); break;
+      case 'audio': emit('audio', m); break;
       case 'compare': S.compare = m.on; S.compareMatch = m.match; emit('compare'); break;
       case 'error': toast(m.msg, true); break;
       case 'toast': toast(m.msg, false, m.long ? 9000 : 0); break;
@@ -114,6 +117,45 @@ function toast(msg, err, ms) {
   const t = $('#toast');
   t.textContent = msg; t.className = 'toast' + (err ? ' error' : ''); t.hidden = false;
   clearTimeout(t._h); t._h = setTimeout(() => t.hidden = true, ms || (err ? 5000 : 2200));
+}
+
+// A progress card for long jobs (opening / importing a project): a big percentage, the stage list,
+// time left, and a few useful lines to read while waiting. `stages` = [[label, weight], ...];
+// stage(i, fraction, detail) moves it on, and done() takes it away.
+const WAIT_TIPS = [
+  'Your original file is never changed: the project is copied.',
+  'Recordings stay raw. Edits and the mix are saved separately, so you can always go back.',
+  'Waveforms are drawn once; next time this project opens at once.',
+  'Cmd/Ctrl+O brings back the project list at any time.',
+  'Tip: Mixer → Mix settings saves just your sound as one tiny file, with no audio.',
+  'Long services are big: 24 channels for 2 hours is about 25 GB.',
+];
+function progressCard(title, stages, sub) {
+  const t0 = performance.now(), total = stages.reduce((a, [, w]) => a + w, 0);
+  const pct = h('div', { class: 'pc-pct' }, '0%'), bar = h('i'), msg = h('div', { class: 'pc-msg' }, 'Starting…'),
+    eta = h('div', { class: 'pc-eta' }), tip = h('div', { class: 'pc-tip' }, WAIT_TIPS[0]);
+  const dots = stages.map(([label]) => h('li', {}, h('span', { class: 'pc-dot' }), label));
+  const el = h('div', { class: 'loader' }, h('div', { class: 'loader-card pc' },
+    h('b', {}, title), sub ? h('small', {}, sub) : null, pct, h('div', { class: 'loader-bar' }, bar), msg,
+    stages.length > 1 ? h('ul', { class: 'pc-stages' }, ...dots) : null, eta, tip));
+  document.body.append(el);
+  let cur = 0, frac = 0, tipN = 0;
+  const tipTimer = setInterval(() => { tip.style.opacity = 0; setTimeout(() => { tipN = (tipN + 1) % WAIT_TIPS.length; tip.textContent = WAIT_TIPS[tipN]; tip.style.opacity = 1; }, 250); }, 7000);
+  const fmt = sec => sec < 5 ? 'a few seconds' : sec < 60 ? Math.round(sec / 5) * 5 + ' seconds' : Math.round(sec / 60) + ' min';
+  const paint = () => {
+    const before = stages.slice(0, cur).reduce((a, [, w]) => a + w, 0);
+    const overall = Math.min(1, (before + stages[cur][1] * frac) / total);
+    pct.textContent = Math.round(overall * 100) + '%';
+    bar.style.width = Math.max(2, overall * 100) + '%';
+    dots.forEach((d, i) => { d.className = i < cur ? 'done' : i === cur ? 'now' : ''; });
+    const el_ = (performance.now() - t0) / 1000;
+    eta.textContent = overall > 0.04 && el_ > 3 ? `${fmt(el_ * (1 - overall) / overall)} left` : '';
+  };
+  paint();
+  return {
+    stage(i, f, detail) { cur = Math.min(i, stages.length - 1); frac = Math.max(0, Math.min(1, f || 0)); if (detail) msg.textContent = detail; paint(); },
+    done() { clearInterval(tipTimer); el.classList.add('leaving'); setTimeout(() => el.remove(), 200); },
+  };
 }
 
 function modal(build) {

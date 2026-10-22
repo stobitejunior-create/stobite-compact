@@ -34,14 +34,12 @@
     try { items = await api('projects'); } catch (e) { items = []; }
     render();
   }
-  // a bar while a project opens: reading its tracks' waveforms is most of the wait on a long service
+  // the progress card while a project opens: reading its tracks' waveforms is most of the wait on a long service
   function loader(name) {
-    const bar = h('i'), msg = h('span', {}, 'Opening');
-    const el = h('div', { class: 'loader' }, h('div', { class: 'loader-card' }, h('b', {}, name), msg, h('div', { class: 'loader-bar' }, bar)));
-    document.body.append(el);
+    const pc = progressCard(name, [['Opening', 1]]);
     let alive = true;
-    on('loading', m => { if (!alive) return; bar.style.width = Math.round(m.progress * 100) + '%'; msg.textContent = m.msg; });
-    return () => { alive = false; el.remove(); };
+    on('loading', m => { if (alive && (m.stage || 'open') === 'open') pc.stage(0, m.progress, m.msg); });
+    return () => { alive = false; pc.done(); };
   }
   async function openProject(name) {
     if (S.session?.name !== name) {

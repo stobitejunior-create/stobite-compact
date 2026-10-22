@@ -469,6 +469,60 @@
     document.body.classList.toggle('comparing', !!S.compare);
   });
   $('#btnLoop').after(metro, count, ab);
+  // ---- listen here: the phone remote plays the finished mix through the phone's own speakers or headphones.
+  // The mix is sent as 16-bit stereo and scheduled a quarter second ahead, so Wi-Fi hiccups don't crackle.
+  const L = { ac: null, on: false, sr: 48000, next: 0 };
+  const listenBtn = h('button', { class: 'tbtn', id: 'btnListen', title: 'Listen to the mix on this device', onclick: () => listenHere() }, icon('headphones', 18));
+  listenBtn.hidden = ['localhost', '127.0.0.1'].includes(location.hostname);    // the computer already plays it
+  $('#btnLoop').after(listenBtn);
+  window.listenHere = async (force) => {
+    const want = force === undefined ? !L.on : !!force;
+    if (want) {
+      L.ac = L.ac || new (window.AudioContext || window.webkitAudioContext)();
+      try { await L.ac.resume(); } catch (e) { }          // needs this tap: browsers don't allow sound before one
+      L.on = true; L.next = 0;
+      send({ t: 'audio', on: true });
+      toast('Listening on this device');
+    } else {
+      L.on = false;
+      send({ t: 'audio', on: false });
+    }
+    listenBtn.classList.toggle('on', L.on);
+  };
+  on('audio', m => { L.sr = m.sr || 48000; });
+  on('info', () => { if (L.on) send({ t: 'audio', on: true }); });   // after a reconnect, ask again
+  window.onAudioData = buf => {
+    if (!L.on || !L.ac) return;
+    const pcm = new Int16Array(buf), n = pcm.length >> 1;
+    if (!n) return;
+    const ab = L.ac.createBuffer(2, n, L.sr), l = ab.getChannelData(0), r = ab.getChannelData(1);
+    for (let i = 0; i < n; i++) { l[i] = pcm[2 * i] / 32768; r[i] = pcm[2 * i + 1] / 32768; }
+    const now = L.ac.currentTime;
+    if (L.next < now + 0.03) L.next = now + 0.25;        // ran dry (or starting): leave a quarter second of cushion
+    else if (L.next > now + 1.2) return;                 // too far behind: skip this bit to catch up
+    const src = L.ac.createBufferSource();
+    src.buffer = ab; src.connect(L.ac.destination); src.start(L.next);
+    L.next += n / L.sr;
+  };
+
+  // ---- a running export shows in the header (click it to see how far it is, or to cancel); a finished one says so
+  const exPill = h('button', { class: 'pill export-pill', id: 'exportPill', hidden: true, title: 'An export is running: click to see it', onclick: () => openExport() });
+  $('#top .status')?.prepend(exPill);
+  let exWas = false;
+  const paintEx = () => {
+    const j = S.exportJob, run = !!(j && j.running);
+    exPill.hidden = !run;
+    if (run) exPill.textContent = `Exporting ${Math.round((j.progress || 0) * 100)}%`;
+    exWas = run;
+  };
+  on('meters', paintEx); on('info', paintEx); on('mixer', paintEx);
+  on('export', job => {
+    paintEx();
+    if (!job || job.running) return;                                                // just started: the pill shows it
+    if (document.querySelector('#modal:not([hidden]) .progress')) return;           // the open export window shows it itself
+    toast(job.error ? (job.error === 'Cancelled' ? 'Export cancelled' : 'Export failed: ' + job.error) : 'Export finished: ' + (job.file || '').split(/[\\/]/).pop(), !!job.error && job.error !== 'Cancelled', 8000);
+  });
+
   // ---- service lock: the padlock freezes the mix; play / stop / record keep working
   const lockBtn = h('button', { class: 'tbtn lockb', id: 'btnLock', title: 'Service lock: freeze the mix so nothing changes by accident (⇧⌘L)', onclick: () => toggleLock() }, icon('unlock', 17));
   $('#top .status')?.prepend(lockBtn);

@@ -827,10 +827,26 @@
   $('#btnImport').onclick = () => $('#importFile').click();
   window.importProject = async f => {
     if (!confirm(`Open the project “${f.name}”? It is copied into your sessions and opened (the current session is saved first).`)) return;
-    const fd = new FormData(); fd.append('file', f, f.name);
-    toast('Opening project ' + f.name + '… (large projects take a moment)');
-    const r = await tryApi('project-import', fd);
-    toast('Opened project ' + r.name);
+    const mb = f.size / 1e6, size = mb >= 1000 ? (mb / 1000).toFixed(1) + ' GB' : Math.round(mb) + ' MB';
+    const pc = progressCard(f.name.replace(/\.stobite$/, ''), [['Sending the file', 0.3], ['Unpacking recordings', 0.45], ['Opening the project', 0.25]], size);
+    pc.stage(0, 0, 'Sending the file…');
+    // the server reports the unpacking and opening; the upload itself is measured here
+    on('loading', m => { if (m.stage === 'unpack') pc.stage(1, m.progress, m.msg); else if (m.stage === 'open') pc.stage(2, m.progress, m.msg); });
+    try {
+      const r = await new Promise((resolve, reject) => {
+        const x = new XMLHttpRequest(), fd = new FormData();
+        fd.append('file', f, f.name);
+        x.open('POST', '/api/project-import');
+        x.upload.onprogress = e => { if (e.lengthComputable) pc.stage(0, e.loaded / e.total, `Sending ${(e.loaded / 1e6 >= 1000 ? (e.loaded / 1e9).toFixed(1) + ' GB' : Math.round(e.loaded / 1e6) + ' MB')} of ${size}`); };
+        x.upload.onload = () => pc.stage(1, 0, 'Unpacking recordings…');
+        x.onload = () => { let j = {}; try { j = JSON.parse(x.responseText); } catch (e) { } x.status < 300 ? resolve(j) : reject(new Error(j.error || j.message || 'Could not open that project')); };
+        x.onerror = () => reject(new Error('Connection lost while sending the file'));
+        x.send(fd);
+      });
+      pc.stage(2, 1, 'Done');
+      toast('Opened project ' + r.name);
+    } catch (err) { toast(err.message, true); }
+    finally { pc.done(); }
   };
   $('#importFile').onchange = async e => {
     const proj = [...e.target.files].find(f => f.name.endsWith('.stobite'));
@@ -860,7 +876,41 @@
   const loadPrefs = () => { try { return JSON.parse(localStorage.getItem('stb-export') || '{}'); } catch (e) { return {}; } };
   const savePrefs = p => { try { localStorage.setItem('stb-export', JSON.stringify(p)); } catch (e) { /* private mode */ } };
 
+  // what an export looks like once it has finished (or failed): used by the dialog and by the toast
+  function exportResult(job) {
+    if (job.error) return [h('p', { class: job.error === 'Cancelled' ? 'hint' : 'err' }, job.error === 'Cancelled' ? 'Export cancelled. The unfinished files were removed.' : job.error)];
+    const local = ['localhost', '127.0.0.1'].includes(location.hostname);
+    return [h('p', { class: 'ok' }, 'Done: ' + job.file + (job.bytes ? ` (${fmtBytes(job.bytes)})` : '')),
+      job.lufs != null && job.kind === 'mix' ? h('p', { class: 'hint' }, `Final loudness ${job.lufs} LUFS` + (job.gain != null ? ` (measured ${job.measured}, adjusted ${job.gain > 0 ? '+' : ''}${job.gain} dB)` : '')) : null,
+      job.kind === 'project' ? h('p', { class: 'hint' }, 'Copy this one file to a USB stick or cloud drive. On the other computer: Edit → Import, or drag it onto the timeline.') : null,
+      job.kind !== 'tracks' ? h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(job.file), style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Download') : null,
+      local ? h('button', { class: 'btn', style: 'margin-left:6px', onclick: () => api('reveal', undefined, '?what=export') }, 'Show in folder') : null];
+  }
+  // opening Export while one is already running shows how far it has got (it keeps going when the window is closed)
+  function exportRunningView(card, close) {
+    const bar = h('div', { class: 'progress' }, h('i')), pct = h('div', { class: 'pc-pct' }, '0%'), eta = h('div', { class: 'pc-eta' }), out = h('div');
+    const cancel = h('button', { class: 'btn danger', onclick: async () => { cancel.disabled = true; cancel.textContent = 'Cancelling…'; await api('export-cancel', {}); } }, 'Cancel export');
+    const paint = () => {
+      const j = S.exportJob; if (!j || !j.running) return;
+      const f = Math.max(0, Math.min(1, j.progress || 0));
+      pct.textContent = Math.round(f * 100) + '%'; bar.firstChild.style.width = Math.max(1, f * 100) + '%';
+      const el = Date.now() / 1000 - (j.t0 || Date.now() / 1000);
+      eta.textContent = f > 0.04 && el > 3 ? `about ${(el * (1 - f) / f) < 60 ? Math.max(5, Math.round(el * (1 - f) / f / 5) * 5) + ' seconds' : Math.round(el * (1 - f) / f / 60) + ' min'} left` : '';
+    };
+    const doneBtns = h('div', { class: 'acts' }, h('button', { class: 'btn', onclick: close }, 'Close'), cancel);
+    card.append(h('h3', {}, 'Exporting…'), h('p', { class: 'hint' }, S.exportJob?.label || ''), pct, bar, eta,
+      h('p', { class: 'hint' }, 'You can close this window: the export keeps running, and the bar at the top shows how far it is.'), out, doneBtns);
+    paint();
+    on('meters', () => { if (card.isConnected) paint(); });
+    on('export', job => {
+      if (!card.isConnected || !job || job.running) return;
+      bar.firstChild.style.width = '100%'; pct.textContent = job.error ? '' : '100%'; eta.textContent = ''; cancel.remove();
+      out.append(...exportResult(job));
+    });
+  }
+
   window.openExport = function (start, end, target) {
+    if (S.exportJob?.running) return modal((card, close) => exportRunningView(card, close));
     modal(async (card, close) => {
       const pref = loadPrefs();
       // ---- what part of the service: everything, the time selection, selected clips, the loop, a section, or typed times
@@ -1075,15 +1125,11 @@
         const offM = (m) => { if (m.ex != null) prog.firstChild.style.width = (m.ex * 100) + '%'; };
         on('meters', offM);
         on('export', job => {
+          if (!out.isConnected || !job || job.running) return;
           prog.firstChild.style.width = '100%';
           out.innerHTML = '';
-          if (job.error) { out.append(h('p', { class: 'err' }, job.error)); go.disabled = false; return; }
-          const local = ['localhost', '127.0.0.1'].includes(location.hostname);
-          out.append(h('p', { class: 'ok' }, 'Done: ' + job.file + (job.bytes ? ` (${fmtBytes(job.bytes)})` : '')),
-            job.lufs != null && job.kind === 'mix' ? h('p', { class: 'hint' }, `Final loudness ${job.lufs} LUFS` + (job.gain != null ? ` (measured ${job.measured}, adjusted ${job.gain > 0 ? '+' : ''}${job.gain} dB)` : '')) : null,
-            job.kind === 'project' ? h('p', { class: 'hint' }, 'Copy this one file to a USB stick or cloud drive. On the other computer: Edit → Import, or drag it onto the timeline.') : null,
-            job.kind !== 'tracks' ? h('a', { class: 'btn', href: '/api/download?file=' + encodeURIComponent(job.file), style: 'display:inline-flex;align-items:center;text-decoration:none' }, 'Download') : null,
-            local ? h('button', { class: 'btn', style: 'margin-left:6px', onclick: () => api('reveal', undefined, '?what=export') }, 'Show in folder') : null);
+          if (job.error) go.disabled = false;
+          out.append(...exportResult(job));
         });
       };
     });
