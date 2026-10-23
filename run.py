@@ -19,7 +19,20 @@ from aiohttp import web
 from stobite.server import build_app, PORT, lan_ips
 
 
+def raise_file_limit():
+    """macOS lets a program keep only 256 files open by default; a big project has more recordings than that."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = 4096 if hard == resource.RLIM_INFINITY else min(4096, hard)
+        if soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+    except Exception:
+        pass            # Windows has no such limit
+
+
 def serve(ready, holder):
+    raise_file_limit()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     app = build_app()
@@ -31,6 +44,12 @@ def serve(ready, holder):
     remote = bool(a.engine.cfg.get("remote", False)) or "--no-browser" in sys.argv
     loop.run_until_complete(a.set_remote(remote))
     holder["loop"], holder["runner"], holder["app"] = loop, runner, app
+    # Python's garbage collector pauses everything while it scans; a long scan in the middle of an audio block
+    # is an audible click. Everything made so far is kept (never scanned again) and scans are made rarer.
+    import gc
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(20000, 20, 50)
     ready.set()
     loop.run_forever()
 

@@ -1212,7 +1212,10 @@ class Engine:
                             ch["solo"] = False
                             if not (ch.get("out") == "speech" or ch.get("type") in postservice.SPEECH):
                                 ch["mute"] = True
-                    return Mixer(s.nch, s.sr, st)
+                    mx = Mixer(s.nch, s.sr, st)
+                    mx.offline = True            # no before/after comparison, true-peak or spectrum work in a render
+                    mx.loud.lite = True
+                    return mx
 
                 def rd(pos, n):
                     """The recording from pos (which may be before the start: silence there)."""

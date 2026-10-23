@@ -37,9 +37,8 @@
   // the progress card while a project opens: reading its tracks' waveforms is most of the wait on a long service
   function loader(name) {
     const pc = progressCard(name, [['Opening', 1]]);
-    let alive = true;
-    on('loading', m => { if (alive && (m.stage || 'open') === 'open') pc.stage(0, m.progress, m.msg); });
-    return () => { alive = false; pc.done(); };
+    const off = on('loading', m => { if ((m.stage || 'open') === 'open') pc.stage(0, m.progress, m.msg); });
+    return () => { off(); pc.done(); };
   }
   async function openProject(name) {
     if (S.session?.name !== name) {

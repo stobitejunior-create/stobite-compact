@@ -298,6 +298,22 @@ class Dynamics:
     @staticmethod
     def _smooth(target, state, att, rel):
         # target, out: (nsub, N); attack when reduction increases
+        n, c = target.shape
+        if c <= 6:
+            # few channels (a bus, the limiter, a multiband): plain Python numbers beat tiny numpy arrays
+            # about 2-6x here, and give exactly the same result
+            st = np.atleast_1d(state).tolist()
+            at = np.broadcast_to(att, (c,)).tolist()
+            rl = np.broadcast_to(rel, (c,)).tolist()
+            rows = target.tolist()
+            rng = range(c)
+            for row in rows:
+                for j in rng:
+                    t = row[j]
+                    s = st[j]
+                    s = t + (at[j] if t > s else rl[j]) * (s - t)
+                    st[j] = row[j] = s
+            return np.array(rows, dtype=target.dtype).reshape(n, c), np.array(st)
         out = np.empty_like(target)
         for k in range(target.shape[0]):
             t = target[k]
@@ -462,8 +478,10 @@ class Loudness:
         self.last_tp = 0.0
         self.corr = [0.0, 0.0, 0.0]
 
+    lite = False    # offline export: only the integrated loudness is needed (no true peak, correlation, spectrum)
+
     def process(self, x):
-        if len(x):
+        if len(x) and not self.lite:
             h = getattr(self, "_tp_hist", None)
             if h is None or h.shape[1] != x.shape[1]:
                 h = self._tp_hist = np.zeros((TP_HIST, x.shape[1]), np.float32)
@@ -471,9 +489,10 @@ class Loudness:
             self.tp_max = max(self.tp_max, self.last_tp)
         k = sosfilt_multi(self.sos, x, self.zi)
         p = (k ** 2).sum(axis=1)
-        self.corr[0] += float((x[:, 0] * x[:, 1]).sum())
-        self.corr[1] += float((x[:, 0] ** 2).sum())
-        self.corr[2] += float((x[:, 1] ** 2).sum())
+        if not self.lite:
+            self.corr[0] += float((x[:, 0] * x[:, 1]).sum())
+            self.corr[1] += float((x[:, 0] ** 2).sum())
+            self.corr[2] += float((x[:, 1] ** 2).sum())
         i = 0
         n = len(p)
         while i < n:
@@ -489,6 +508,8 @@ class Loudness:
                 if len(self.bins) >= 30:
                     self.short_hist.append(sum(self.bins[-30:]) / 30)
                 del self.bins[:-30]
+        if self.lite:
+            return
         mono = (x[:, 0] + x[:, 1]) * 0.5
         m = len(mono)
         if m >= len(self.ring):

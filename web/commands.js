@@ -196,7 +196,7 @@
       hz.textContent = `${t.hz.toFixed(1)} Hz`;
     };
     note.append(oct);
-    on('meters', onM);
+    onWhile('meters', note, onM);
     const stop = () => { send({ t: 'tuner', ch: null }); };
     card.append(h('h3', {}, 'Tuner'),
       h('div', { class: 'srow' }, h('div', { class: 'srow-l' }, h('span', {}, 'Listen to'), h('small', {}, 'The raw input, before any processing')), sel),
@@ -246,7 +246,7 @@
             h('button', { class: 'btn', onclick: () => { close(); showView('mixer'); openEditor('master'); } }, 'Open the master chain')));
       }
     };
-    on('assist', listener);
+    onWhile('assist', () => document.body.contains(go), listener);
     go.onclick = async () => {
       if (busy) return;
       busy = true; go.disabled = true; out.innerHTML = ''; bar.firstChild.style.width = '2%'; stage.textContent = 'Starting…';
@@ -399,7 +399,7 @@
     const file = h('input', { type: 'file', accept: 'video/*,audio/*,.mp4,.mov,.m4a,.mp3,.wav' });
     const bar = h('div', { class: 'progress' }, h('i')), out = h('div'), stage = h('p', { class: 'hint' });
     const listener = m => { if (document.body.contains(card) && m.progress != null) { bar.firstChild.style.width = (40 + m.progress * 60) + '%'; stage.textContent = 'Matching the sound…'; } };
-    on('valign', listener);
+    onWhile('valign', bar, listener);
     const go = h('button', { class: 'btn accent', onclick: () => {
       const f = file.files[0]; if (!f) return toast('Choose the video (or its audio) first', true);
       go.disabled = true; out.innerHTML = ''; stage.textContent = 'Reading the file…';

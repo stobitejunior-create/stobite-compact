@@ -57,6 +57,7 @@ class App:
         self.engine = Engine()
         self.clients = set()
         self.audio_clients = set()       # windows / phones that asked to hear the mix
+        self._ws_lock = {}               # window -> its send queue
         self.loop = None
         self.wing = wingmod.WingBridge(on_update=self._wing_update)
         self.want_spectrum = False
@@ -89,15 +90,31 @@ class App:
         elif kind == "export":
             await self.broadcast({"t": "export", "job": e.export_job_public()})
 
+    async def _send(self, ws, data):
+        """One window's message. Each window has its own queue (a lock keeps its messages in order), and a
+        window that doesn't take a message within 3 s is dropped: one phone on bad Wi-Fi must never hold
+        up the meters or the audio for everyone else."""
+        lock = self._ws_lock.get(ws)
+        if lock is None:
+            lock = self._ws_lock[ws] = asyncio.Lock()
+        async with lock:
+            try:
+                await asyncio.wait_for(ws.send_bytes(data) if isinstance(data, bytes) else ws.send_str(data), 3)
+            except Exception:
+                self.clients.discard(ws)
+                self.audio_clients.discard(ws)
+                self._ws_lock.pop(ws, None)
+
     async def broadcast(self, msg, skip=None):
-        data = json.dumps(msg)
+        data = json.dumps(msg, separators=(",", ":"))
+        droppable = msg.get("t") == "m"          # meters are replaced 20 times a second: skip a window that is behind
         for ws in list(self.clients):
             if ws is skip:
                 continue
-            try:
-                await ws.send_str(data)
-            except Exception:
-                self.clients.discard(ws)
+            lock = self._ws_lock.get(ws)
+            if droppable and lock is not None and lock.locked():
+                continue
+            asyncio.ensure_future(self._send(ws, data))
 
     def mixer_public(self):
         st = self.engine.mixer.snapshot()
@@ -220,29 +237,27 @@ class App:
                 continue
             data = b"".join(chunks)
             for w in list(self.audio_clients):
-                try:
-                    await asyncio.wait_for(w.send_bytes(data), 0.5)
-                except Exception:
-                    self.audio_clients.discard(w)
+                lock = self._ws_lock.get(w)
+                if lock is not None and lock.locked():
+                    continue                       # behind: a gap is better than a growing delay
+                asyncio.ensure_future(self._send(w, data))
             self._audio_flag()
 
     async def broadcast_to(self, targets, msg):
-        txt = json.dumps(msg)
+        txt = json.dumps(msg, separators=(",", ":"))
         for w in list(targets):
-            try:
-                await w.send_str(txt)
-            except Exception:
-                targets.discard(w)
+            asyncio.ensure_future(self._send(w, txt))
 
     # ------------------------------------------------------------- websocket
     async def ws(self, request):
         ws = web.WebSocketResponse(heartbeat=20, max_msg_size=8 * 1024 * 1024)
         await ws.prepare(request)
-        self.clients.add(ws)
         e = self.engine
-        await ws.send_str(json.dumps({"t": "hello", "info": self.info(), "mixer": self.mixer_public(),
-                                      "session": e.session.public(), "transport": e.transport(),
-                                      "wing": self.wing.values}))
+        # the first message is the whole state; the window only joins the broadcasts after it, so no update can overtake it
+        await self._send(ws, json.dumps({"t": "hello", "info": self.info(), "mixer": self.mixer_public(),
+                                         "session": e.session.public(), "transport": e.transport(),
+                                         "wing": self.wing.values}, separators=(",", ":")))
+        self.clients.add(ws)
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -251,10 +266,11 @@ class App:
                     await self.handle(ws, json.loads(msg.data))
                 except Exception as ex:
                     traceback.print_exc()
-                    await ws.send_str(json.dumps({"t": "error", "msg": str(ex)}))
+                    await self._send(ws, json.dumps({"t": "error", "msg": str(ex)}))
         finally:
             self.clients.discard(ws)
             self.audio_clients.discard(ws)
+            self._ws_lock.pop(ws, None)
             self._audio_flag()
         return ws
 
@@ -275,7 +291,7 @@ class App:
         if t == "audio":      # listen to the mix from this window (the phone remote has no speakers of its own to hear)
             if m.get("on"):
                 self.audio_clients.add(ws)
-                await ws.send_str(json.dumps({"t": "audio", "sr": e.sr}))
+                await self._send(ws, json.dumps({"t": "audio", "sr": e.sr}))
             else:
                 self.audio_clients.discard(ws)
             self._audio_flag()
@@ -296,7 +312,7 @@ class App:
         elif t in ("mixundo", "mixredo"):
             src, dst = (self.mix_undo, self.mix_redo) if t == "mixundo" else (self.mix_redo, self.mix_undo)
             if not src:
-                await ws.send_str(json.dumps({"t": "error", "msg": "Nothing to " + ("undo" if t == "mixundo" else "redo") + " in the mixer"}))
+                await self._send(ws, json.dumps({"t": "error", "msg": "Nothing to " + ("undo" if t == "mixundo" else "redo") + " in the mixer"}))
                 return
             dst.append(e.mixer.snapshot())
             st = src.pop()
@@ -304,7 +320,7 @@ class App:
             e.dirty = True
             self.mix_ck = 0
             await self.broadcast({"t": "mixer", "mixer": self.mixer_public()})
-            await ws.send_str(json.dumps({"t": "toast", "msg": "Mixer " + ("undo" if t == "mixundo" else "redo")}))
+            await self._send(ws, json.dumps({"t": "toast", "msg": "Mixer " + ("undo" if t == "mixundo" else "redo")}))
         elif t == "focus":
             e.mixer.focus = m.get("ch") if isinstance(m.get("ch"), int) else None
             e.mixer.focus_target = m.get("target") or None

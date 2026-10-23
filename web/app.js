@@ -1,8 +1,11 @@
 // Core: connection, shared state, transport, views, shortcuts.
 const S = { info: null, mixer: null, session: null, tr: { playing: false, recording: false, playhead: 0 }, wing: {}, meters: null, view: 'edit' };
 const bus = {};
-const on = (ev, fn) => (bus[ev] = bus[ev] || []).push(fn);
-const emit = (ev, d) => (bus[ev] || []).forEach(fn => { try { fn(d); } catch (e) { console.error(e); } });
+// on() returns a function that stops listening. onWhile() stops by itself once `alive` (an element, or a
+// function) is gone: dialogs use it so each time one opens it doesn't leave a listener behind for good.
+const on = (ev, fn) => { (bus[ev] = bus[ev] || []).push(fn); return () => { const a = bus[ev], i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); }; };
+const onWhile = (ev, alive, fn) => { const off = on(ev, d => { if (!(typeof alive === 'function' ? alive() : alive.isConnected)) return off(); fn(d); }); return off; };
+const emit = (ev, d) => [...(bus[ev] || [])].forEach(fn => { try { fn(d); } catch (e) { console.error(e); } });
 
 let ws, wsOpen = false;
 const pending = new Map();

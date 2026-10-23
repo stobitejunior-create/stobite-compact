@@ -136,8 +136,7 @@ def recover_interrupted(session):
         frames = sf.info(p).frames
         if frames <= 0:
             continue
-        d, _ = sf.read(p, dtype="float32")
-        session.write_peaks(rel, d if d.ndim == 1 else d[:, 0])
+        session.peaks_from_file(rel)
         clips.append(Session.new_clip(int(c), rel, int(info.get("start", 0)), frames, name=info.get("name", "Recovered") + " (recovered)"))
     with session.lock:
         session.clips.extend(clips)
@@ -469,6 +468,8 @@ class Session:
     def import_file(self, path, track, start):
         """Import an audio file (split to mono tracks starting at `track`)."""
         info = sf.info(path)
+        if info.samplerate == self.sr:
+            return self._import_streaming(path, info, track, start)
         data, sr = sf.read(path, dtype="float32", always_2d=True)
         if sr != self.sr:
             from scipy.signal import resample_poly
@@ -489,6 +490,38 @@ class Session:
             self._bump()
         return info
 
+    def _import_streaming(self, path, info, track, start):
+        """Same-rate import in 1M-frame pieces: a file of any length needs only a few MB of memory."""
+        base = safe_name(os.path.splitext(os.path.basename(path))[0])
+        chans = [ch for ch in range(info.channels) if track + ch < self.nch]
+        rels = {ch: f"audio/{base}_{uuid.uuid4().hex[:6]}_{ch + 1}.wav" for ch in chans}
+        outs = {ch: sf.SoundFile(os.path.join(self.dir, rels[ch]), "w", self.sr, 1, "PCM_24") for ch in chans}
+        peaks = {ch: [] for ch in chans}
+        carry = {ch: np.zeros(0, np.float32) for ch in chans}
+        frames = 0
+        try:
+            with sf.SoundFile(path) as src:
+                for blk in src.blocks(blocksize=1 << 20, dtype="float32", always_2d=True):
+                    frames += len(blk)
+                    for ch in chans:
+                        outs[ch].write(blk[:, ch])
+                        x = np.concatenate([carry[ch], blk[:, ch]])
+                        n = len(x) // PEAK_RES
+                        if n:
+                            peaks[ch].append(np.abs(x[: n * PEAK_RES]).reshape(n, PEAK_RES).max(axis=1))
+                        carry[ch] = x[n * PEAK_RES:]
+        finally:
+            for f in outs.values():
+                f.close()
+        with self.lock:
+            self._checkpoint()
+            for ch in chans:
+                pk = np.concatenate(peaks[ch]) if peaks[ch] else np.zeros(0, np.float32)
+                np.save(self.peaks_path(rels[ch]), pk.astype(np.float16))
+                self.clips.append(self.new_clip(track + ch, rels[ch], start, frames, name=base))
+            self._bump()
+        return info
+
     @staticmethod
     def new_clip(track, rel, start, length, name=None):
         return {"id": uuid.uuid4().hex[:10], "track": track, "file": rel, "start": int(start), "offset": 0,
@@ -498,6 +531,21 @@ class Session:
     # ------------------------------------------------------------ peaks
     def peaks_path(self, rel):
         return os.path.join(self.dir, "peaks", os.path.basename(rel) + ".npy")
+
+    def peaks_from_file(self, rel, channel=0):
+        """Build a file's waveform outline by reading it in pieces (a 2-hour recording is gigabytes:
+        never hold it all in memory)."""
+        parts, carry = [], np.zeros(0, np.float32)
+        with sf.SoundFile(os.path.join(self.dir, rel)) as f:
+            for blk in f.blocks(blocksize=1 << 20, dtype="float32", always_2d=True):
+                x = np.concatenate([carry, blk[:, min(channel, blk.shape[1] - 1)]])
+                n = len(x) // PEAK_RES
+                if n:
+                    parts.append(np.abs(x[: n * PEAK_RES]).reshape(n, PEAK_RES).max(axis=1))
+                carry = x[n * PEAK_RES:]
+        pk = np.concatenate(parts) if parts else np.zeros(0, np.float32)
+        np.save(self.peaks_path(rel), pk.astype(np.float16))
+        self.peak_cache.pop(rel, None)
 
     def write_peaks(self, rel, mono):
         n = len(mono) // PEAK_RES
@@ -510,8 +558,7 @@ class Session:
         if pk is None:
             p = self.peaks_path(rel)
             if not os.path.exists(p):
-                d, _ = sf.read(os.path.join(self.dir, rel), dtype="float32")
-                self.write_peaks(rel, d if d.ndim == 1 else d[:, 0])
+                self.peaks_from_file(rel)
             pk = np.load(p).astype(np.float32)
             self.peak_cache[rel] = pk
         f = max(int(spp) // PEAK_RES, 1)
@@ -524,15 +571,19 @@ class Session:
 class Reader:
     """Renders the clip timeline into (frames, nch) blocks. One per thread."""
 
+    MAX_OPEN = 96     # a big project has hundreds of recordings; the system allows only so many open files
+
     def __init__(self, session):
         self.s = session
         self.files = {}
 
     def _f(self, rel):
-        f = self.files.get(rel)
+        f = self.files.pop(rel, None)          # (re)insert last: the dict then keeps least-recently-used first
         if f is None:
+            if len(self.files) >= self.MAX_OPEN:
+                self.files.pop(next(iter(self.files))).close()
             f = sf.SoundFile(os.path.join(self.s.dir, rel))
-            self.files[rel] = f
+        self.files[rel] = f
         return f
 
     def close(self):

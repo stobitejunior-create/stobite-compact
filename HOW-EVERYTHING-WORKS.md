@@ -845,6 +845,14 @@ Testing uses `STOBITE_HOME=<a scratch folder>` so your real projects are never t
 7. Offers to install the new Mac app.
 The GitHub workflow (`.github/workflows/build.yml`) only runs when started by hand, and builds Windows only unless the "mac" box is ticked.
 
+### Performance notes (measured, 24 channels with the worship template)
+- **Live**: about 1.3 ms of every 5.3 ms audio block (about 25% of one core). Moving a knob costs under 0.5 ms; a snapshot for autosave or undo about 1.4 ms; idle (nothing playing) about 2% of a core. The screen runs at the display's full rate during playback.
+- **Export**: about 11.7x faster than real time (a 2-hour service in roughly 10 minutes, twice that with a loudness target, which needs a measuring pass). Exports skip what only the live screen needs (before/after comparison, true-peak metering, spectrum, correlation: `Mixer.offline`, `Loudness.lite`), and `dsp.Dynamics._smooth` uses plain Python numbers for 6 channels or fewer, which is 2-6x faster than tiny numpy arrays and gives identical results.
+- **Memory**: importing audio, rebuilding waveform outlines and crash recovery read files in 1M-frame pieces, so a 2-hour recording needs about 75 MB, not several GB (`Session._import_streaming`, `peaks_from_file`). Only 96 recordings are kept open at once (`Reader.MAX_OPEN`), and the app raises the system's open-file limit, so projects with hundreds of takes don't hit "too many open files".
+- **Connections**: every window has its own ordered send queue (`App._send`). A window that is behind (a phone on weak Wi-Fi) skips meter and sound frames and is dropped after 3 s without a reply, so it can never slow the others. JSON is sent without spaces.
+- **Garbage collector**: `gc.freeze()` and rarer scans after start-up (`run.py`), so a collection is unlikely to land inside an audio block.
+- **Window code**: dialogs use `onWhile` so their listeners go away when they close.
+
 ### Compatibility notes
 - The code must stay compatible with **Python 3.9** (the Intel build uses Xcode's Python); no `match` statements or `X | None` type hints.
 - `scipy.signal` is deliberately **not** imported (the compiled filter kernel is loaded directly) to keep memory use low.

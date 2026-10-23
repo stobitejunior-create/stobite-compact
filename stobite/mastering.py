@@ -80,6 +80,7 @@ def pick_windows(session, mixer_state=None):
 def render(engine, state, windows, keep=False):
     s = engine.session
     m = Mixer(s.nch, s.sr, copy.deepcopy(state))
+    m.offline = True        # no live before/after work while analysing
     r = Reader(s)
     out = []
     with s.lock:

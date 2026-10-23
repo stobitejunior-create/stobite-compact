@@ -717,6 +717,8 @@ class Mixer:
         x[:] = np.take_along_axis(buf, idx, axis=0)
         self._dl = buf[-D:].copy() if D else self._dl
 
+    offline = False         # an export: skip what only the live screen needs (before/after, meters' extras)
+
     def _before(self, Yr, c, master_g, frames):
         """The mix with no processing: channels summed through the same faders, pans and buses
         (bus faders only), no EQ / dynamics / FX / master chain. Level-matched to the processed
@@ -800,7 +802,8 @@ class Mixer:
         np.maximum(self.m_post, peak * fad, out=self.m_post)
         np.maximum(self.m_rms, np.sqrt((x * x).mean(axis=0)) * fad, out=self.m_rms)
         Y = x @ M
-        self._before(raw @ M, c, master_g, frames)
+        if not self.offline:
+            self._before(raw @ M, c, master_g, frames)
 
         # ---- FX returns (channel sends now, bus sends from the previous block)
         if c["any_send"]:

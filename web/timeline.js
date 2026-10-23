@@ -831,7 +831,7 @@
     const pc = progressCard(f.name.replace(/\.stobite$/, ''), [['Sending the file', 0.3], ['Unpacking recordings', 0.45], ['Opening the project', 0.25]], size);
     pc.stage(0, 0, 'Sending the file…');
     // the server reports the unpacking and opening; the upload itself is measured here
-    on('loading', m => { if (m.stage === 'unpack') pc.stage(1, m.progress, m.msg); else if (m.stage === 'open') pc.stage(2, m.progress, m.msg); });
+    const offLoading = on('loading', m => { if (m.stage === 'unpack') pc.stage(1, m.progress, m.msg); else if (m.stage === 'open') pc.stage(2, m.progress, m.msg); });
     try {
       const r = await new Promise((resolve, reject) => {
         const x = new XMLHttpRequest(), fd = new FormData();
@@ -846,7 +846,7 @@
       pc.stage(2, 1, 'Done');
       toast('Opened project ' + r.name);
     } catch (err) { toast(err.message, true); }
-    finally { pc.done(); }
+    finally { offLoading(); pc.done(); }
   };
   $('#importFile').onchange = async e => {
     const proj = [...e.target.files].find(f => f.name.endsWith('.stobite'));
@@ -901,9 +901,9 @@
     card.append(h('h3', {}, 'Exporting…'), h('p', { class: 'hint' }, S.exportJob?.label || ''), pct, bar, eta,
       h('p', { class: 'hint' }, 'You can close this window: the export keeps running, and the bar at the top shows how far it is.'), out, doneBtns);
     paint();
-    on('meters', () => { if (card.isConnected) paint(); });
-    on('export', job => {
-      if (!card.isConnected || !job || job.running) return;
+    onWhile('meters', bar, paint);
+    onWhile('export', bar, job => {
+      if (!job || job.running) return;
       bar.firstChild.style.width = '100%'; pct.textContent = job.error ? '' : '100%'; eta.textContent = ''; cancel.remove();
       out.append(...exportResult(job));
     });
@@ -1123,9 +1123,9 @@
         }
         catch (e) { out.innerHTML = ''; out.append(h('p', { class: 'err' }, e.message)); go.disabled = false; return; }
         const offM = (m) => { if (m.ex != null) prog.firstChild.style.width = (m.ex * 100) + '%'; };
-        on('meters', offM);
-        on('export', job => {
-          if (!out.isConnected || !job || job.running) return;
+        onWhile('meters', prog, offM);
+        onWhile('export', prog, job => {
+          if (!job || job.running) return;
           prog.firstChild.style.width = '100%';
           out.innerHTML = '';
           if (job.error) go.disabled = false;
