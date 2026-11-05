@@ -125,7 +125,6 @@ class DynEQ:
         det_src = x if detect is None else detect
         nsub = max(x.shape[0] // SUB, 1)
         for b, st in zip(self.bands, self.state):
-            bp = biquad("bell", b["freq"], 0, b.get("q", 1.5), fs)
             # band-pass detector (constant skirt) at the band frequency
             w0 = 2 * math.pi * min(b["freq"], fs * 0.45) / fs
             al = math.sin(w0) / (2 * max(b.get("q", 1.5), 0.1))

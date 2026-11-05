@@ -13,7 +13,13 @@ let flushQueued = false;
 
 function connect() {
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
-  ws.onopen = () => { wsOpen = true; $('#netDot').className = 'dot ok'; };
+  ws.onopen = () => {
+    wsOpen = true; $('#netDot').className = 'dot ok';
+    // what was pressed during a brief drop still happens; anything older than 5 s is dropped, so a mix change or a Play
+    // from a minute ago can't suddenly fire when the connection comes back
+    const now = Date.now();
+    outbox.splice(0).forEach(o => { if (now - o.t < 5000) ws.send(JSON.stringify(o.m)); });
+  };
   ws.onclose = () => { wsOpen = false; $('#netDot').className = 'dot bad'; setTimeout(connect, 1000); };
   ws.binaryType = 'arraybuffer';
   ws.onmessage = ev => {
@@ -42,7 +48,8 @@ function connect() {
     }
   };
 }
-const send = m => wsOpen && ws.send(JSON.stringify(m));
+const outbox = [];
+const send = m => { if (wsOpen && ws.readyState === 1) ws.send(JSON.stringify(m)); else if (outbox.length < 200) outbox.push({ m, t: Date.now() }); };
 
 function applyPath(obj, path, v) {
   let n = obj;
@@ -97,6 +104,21 @@ window.applyTheme = (t) => {
   document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#0e0f11' : '#f3f4f6');
   emit('theme');
 };
+on('theme', () => { if (S.mixer) emit('mixer'); });   // strips redraw their EQ thumbnails
+const THEMES = ['grey', 'dark', 'black', 'light'];
+window.themePref = 'grey';
+window.applyTheme = (t) => {
+  const root = document.documentElement;
+  const pref = THEMES.includes(t) ? t : 'grey';          // anything older ("auto") becomes the default grey
+  window.themePref = pref;
+  root.dataset.theme = pref;
+  try { localStorage.setItem('stobite.theme', pref); } catch (e) { /* storage off */ }
+  readCV();
+  const dark = getComputedStyle(root).colorScheme.includes('dark');
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', getComputedStyle(root).getPropertyValue('--hdr2').trim() || (dark ? '#2c2c2e' : '#f3f4f6'));
+  emit('theme');
+};
+try { applyTheme(localStorage.getItem('stobite.theme') || 'grey'); } catch (e) { applyTheme('grey'); }
 on('theme', () => { if (S.mixer) emit('mixer'); });   // strips redraw their EQ thumbnails
 try { applyTheme(localStorage.getItem('stobite.theme') || 'auto'); } catch (e) { applyTheme('auto'); }
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => applyTheme(document.documentElement.dataset.theme || 'auto'));
@@ -256,8 +278,8 @@ on('meters', m => {
 });
 on('info', () => {
   const i = S.info;
-  const want = i.cfg.theme || 'auto';
-  if (want !== (document.documentElement.dataset.theme || 'auto')) applyTheme(want);
+  const want = THEMES.includes(i.cfg.theme) ? i.cfg.theme : 'grey';
+  if (want !== window.themePref) applyTheme(want);
   $('#tabWing').hidden = !i.cfg.show_wing;
   if (!i.cfg.show_wing && S.view === 'console') showView('mixer');
   $('#audioDot').className = 'dot ' + (i.status === 'running' ? 'ok' : i.status === 'starting' ? 'wait' : 'bad');

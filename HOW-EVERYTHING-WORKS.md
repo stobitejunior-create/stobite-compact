@@ -143,7 +143,7 @@ One block of audio goes through `Engine._callback` (`stobite/engine.py`), then `
    - The WING gets nothing back unless "Send the mix back into the WING" is on.
 10. **Move the playhead on** by one block (and wrap it round a loop).
 
-**Silence skipping** keeps the CPU low: a channel silent for half a second skips its filters, a silent bus (1.5 s) or master is skipped entirely, an FX return that was sent nothing for 8 s is skipped.
+**Silence skipping** keeps the CPU low: a channel silent for half a second skips its filters (12 s if it has something that rings on, like a reverb, delay or drum sample, and never while it is open in the editor), a silent bus (1.5 s) or master is skipped entirely, an FX return that was sent nothing for 8 s is skipped.
 
 ---
 
@@ -372,6 +372,10 @@ The reason it is custom: the library shifter (Rubber Band) can't run in 256-samp
 The hit strength measured just after the onset sets the sample's velocity relative to the loudest recent hits. The sample is played through a small voice list (up to 8 overlapping), pitch-changed by resampling if Tune is set, and blended with the dry drum by Mix.
 
 **Confirm ring** (for cymbals in overhead mics, where snare and kick bleed is louder than the cymbal): when a candidate hit is found, the decision is held for N ms. A cymbal is still ringing at the end of that time; snare or kick bleed in an overhead has died away. If still ringing, the hit counts. To keep the sample on the beat, the real drum is delayed by the same N ms, and the mixer's delay compensation delays every other channel to match. In this mode a smaller jump (1.6x) is enough to be a candidate, because the ring test does the filtering.
+
+**Live display.** The top of the trigger panel shows a scrolling picture of the last 5 seconds, newest on the right: the sound coming in (dim), what the detector hears (bright), the threshold (orange line; drag up or down to set it), the spill floor (dotted yellow), and a mark for every decision: **green** with a flag = picked, **grey ×** = ignored (too quiet, or a cymbal check that died away). **Play** starts from this channel's audio and a count shows hits picked and ignored. It is built from `Trigger._record` (one column per 5 ms, collected only while the panel is open, so exports don't pay for it), read by `Trigger.reading`, sent in the meter message as `mods`, and drawn by `triggerScope` in `web/mixer.js`. The open channel never goes to sleep, so the picture keeps moving through silent gaps.
+
+Samples are prepared when settings change (`Trigger.prepare`), never at the first hit: generating the built-in kit takes about 80 ms and an audio block only 5 ms. The spill floor falls about 15 dB a minute, so one huge hit can't make a quiet section count as spill for long.
 
 **Whole kit.** Mix menu, **Drum Triggers...** finds kick, snare, tom, hi-hat and cymbal/overhead channels by instrument type or name and adds a trigger with sensible detection bands (kick 30-150 Hz, snare 150-8000, toms 60-1200, hats 3000-16000, cymbals 4000-16000 with Confirm ring 40 ms).
 
@@ -730,6 +734,9 @@ Section 6.
 | **Delete goes to the Trash** | Deleting a project moves it to the Mac Trash (permanent on Windows, with a clear warning). | `session.delete_session` |
 | **Quiet startup** | The engine does not open an input until it exists; startup never blocks waiting for a microphone-permission prompt. | `Engine.start_audio` |
 | **Phone remote is off by default** | The server listens only on this computer (127.0.0.1) until you switch on the phone remote; a PIN can be required. | `App.set_remote`, `App.auth` |
+| **Only its own pages can talk to it** | Any website open in a browser on the computer could otherwise send commands to the app's local server. Requests from other sites (Origin, Sec-Fetch-Site) and from website names pointed at this computer (DNS rebinding) are refused. | `_foreign_request` |
+| **No shell, no escaping folders** | "Show in folder" runs without a shell, uploaded names lose any folder part, and waveforms are only read from inside the project. | `server.py` |
+| **Bad settings refused** | Numbers in Setup are checked before saving, so a typo can't stop the audio starting. | `config` route |
 | **Limiter and clip** | The broadcast bus and master have limiters, and a final hard clip. | Section 5.25 |
 
 ---

@@ -132,10 +132,12 @@
     },
 
     look(i, c) {
-      const cur = c.theme || 'auto';
-      const seg = h('div', { class: 'seg' }, ...[['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']].map(([v, l]) =>
-        h('button', { class: v === cur ? 'on' : '', onclick: () => { applyTheme(v); save({ theme: v }); } }, l)));
-      return [h('h2', {}, 'Appearance'), group(null, row('Theme', seg, 'Auto follows the computer'))];
+      const cur = THEMES.includes(c.theme) ? c.theme : 'grey';
+      const names = [['grey', 'Grey', 'Neutral greys, like Logic Pro (the default)'], ['dark', 'Dark', 'Soft charcoal, like Discord'], ['black', 'Black', 'The deepest, for dark rooms'], ['light', 'Light', 'White and bright']];
+      const grid = h('div', { class: 'themes' }, ...names.map(([v, l, d]) =>
+        h('button', { class: 'theme-card' + (v === cur ? ' on' : ''), 'data-t': v, onclick: () => { applyTheme(v); save({ theme: v }); } },
+          h('span', { class: 'theme-sw', 'data-t': v }, h('i'), h('i'), h('i')), h('b', {}, l), h('small', {}, d))));
+      return [h('h2', {}, 'Appearance'), group(null, h('div', { class: 'srow-l', style: 'padding:4px 2px' }, h('span', {}, 'Theme')), grid)];
     },
 
     storage(i, c) {

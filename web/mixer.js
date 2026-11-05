@@ -373,6 +373,7 @@
     bm.hidden = !nm; bm.textContent = `Clear mutes (${nm})`;
   }
   on('mixer', updateClear);
+  on('set', path => { const k = path[path.length - 1]; if (k === 'solo' || k === 'mute') updateClear(); });   // not after a delay: the button must match what you just clicked
   let clrTick = 0;
   on('meters', () => { if (++clrTick % 5 === 0 && S.view === 'mixer') updateClear(); });
 
@@ -915,6 +916,82 @@
     contextMenu({ clientX: r.left, clientY: r.bottom + 4 }, items);
   }
 
+  // The drum trigger's live display: a scrolling waveform (newest on the right) of the sound coming in and of
+  // what the detector hears, the threshold, and a mark on every hit it picked or ignored. The history is kept
+  // per module, so it survives the panel being redrawn.
+  const trigData = new Map();
+  function triggerScope(id, setSens) {
+    const SECS = 5;
+    let D = trigData.get(id);
+    if (!D) { D = { rate: 200, i: null, d: null, marks: [], last: 0, head: 0, thr: -32.5, floor: null, hits: 0, ign: 0 }; trigData.set(id, D); }
+    const size = () => SECS * D.rate;
+    if (!D.i) { D.i = new Int8Array(size()).fill(-70); D.d = new Int8Array(size()).fill(-70); }
+    const cv = h('canvas', { class: 'trigscope', title: 'Drag up or down to set the threshold' });
+    const count = h('span', { class: 'hint' });
+    const feed = v => {
+      const N = size(), n0 = v.n - v.d.length;
+      v.d.forEach((x, k) => { D.d[(n0 + k) % N] = x; D.i[(n0 + k) % N] = v.i[k]; });
+      D.last = v.n; D.thr = v.thr; D.floor = v.floor; D.hits = v.hits; D.ign = v.ign;
+      D.marks.push(...v.m);
+      while (D.marks.length && D.marks[0][0] < D.last - N) D.marks.shift();
+      count.textContent = `${D.hits} picked · ${D.ign} ignored`;
+    };
+    let colors = null, prev = performance.now(), lastDrawn = -1;
+    const readColors = () => { const c = getComputedStyle(document.documentElement), g = k => c.getPropertyValue(k).trim(); colors = { bg: g('--well2'), grid: g('--line'), inp: g('--faint'), det: g('--text'), acc: g('--accent'), hit: g('--green'), ign: g('--dim'), floor: g('--yellow'), txt: g('--dim') }; lastDrawn = -1; };
+    readColors();
+    onWhile('theme', cv, readColors);
+    const yOf = (db, mid) => Math.max(0, Math.min(1, (db + 60) / 60)) * (mid - 3);
+    const draw = now => {
+      if (!cv.isConnected) { if (performance.now() - prev > 3000) return; return requestAnimationFrame(draw); }
+      const dt = (now - prev) / 1000; prev = now;
+      // glide between the 20-a-second updates; never fall far behind
+      D.head = Math.min(D.last, Math.max(D.head + Math.max(dt, 0) * D.rate, D.last - 40));
+      const dpr = devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+      if (W && H && (D.head !== lastDrawn || cv.width !== Math.round(W * dpr))) {
+        lastDrawn = D.head;
+        if (cv.width !== Math.round(W * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+        const g = cv.getContext('2d'), N = size(), mid = H / 2, perPx = N / W, tail = D.head - N;
+        g.setTransform(dpr, 0, 0, dpr, 0, 0);
+        g.fillStyle = colors.bg; g.fillRect(0, 0, W, H);
+        const X = b => (b - tail) / perPx;
+        g.fillStyle = colors.grid;
+        for (let b = Math.ceil(tail / D.rate) * D.rate; b <= D.head; b += D.rate) g.fillRect(X(b), 0, 1, H);   // one line a second: you can see it moving
+        g.fillRect(0, mid, W, 1);
+        for (const [arr, col] of [[D.i, colors.inp], [D.d, colors.det]]) {
+          g.fillStyle = col;
+          for (let x = 0; x < W; x++) {
+            const a = Math.floor(tail + x * perPx), e = Math.max(a + 1, Math.floor(tail + (x + 1) * perPx));
+            if (e <= 0 || a > D.last) continue;
+            let top = -70;
+            for (let b = a; b < e; b++) if (b >= 0 && b > D.last - N && b < D.last) top = Math.max(top, arr[b % N]);
+            const yy = yOf(top, mid);
+            if (yy > 0) g.fillRect(x, mid - yy, 1, yy * 2);
+          }
+        }
+        const line = (db, col, dash) => { const yy = yOf(db, mid); g.strokeStyle = col; g.setLineDash(dash); g.beginPath(); g.moveTo(0, mid - yy + .5); g.lineTo(W, mid - yy + .5); g.moveTo(0, mid + yy + .5); g.lineTo(W, mid + yy + .5); g.stroke(); g.setLineDash([]); };
+        line(D.thr, colors.acc, []);
+        if (D.floor != null && D.floor > D.thr) line(D.floor, colors.floor, [3, 4]);
+        for (const [b, db, kind] of D.marks) {
+          const x = X(b); if (x < 0 || x > W) continue;
+          if (kind === 1) { g.fillStyle = colors.hit; g.fillRect(x - .5, 0, 2, H); g.beginPath(); g.moveTo(x - 5, 0); g.lineTo(x + 6, 0); g.lineTo(x + .5, 8); g.fill(); }
+          else { g.fillStyle = colors.ign; const yy = yOf(db, mid); g.globalAlpha = .75; g.fillRect(x, mid - yy, 1, yy * 2); g.globalAlpha = 1; g.font = '10px sans-serif'; g.fillText('×', x - 3, Math.max(10, mid - yy - 3)); }
+        }
+        g.fillStyle = colors.txt; g.font = '10px sans-serif';
+        g.fillText(`Threshold ${Math.round(D.thr)} dB`, 6, 12);
+        if (!D.last) g.fillText('Press Play, or play the drum', W / 2 - 62, mid - 6);
+      }
+      requestAnimationFrame(draw);
+    };
+    requestAnimationFrame(draw);
+    drag(cv, { start: () => 0, move: e => {
+      const r = cv.getBoundingClientRect(), mid = r.height / 2, a = Math.min(1, Math.abs(e.clientY - r.top - mid) / (mid - 3)), db = a * 60 - 60;
+      const sens = Math.max(0, Math.min(100, Math.round(100 - (db + 55) / 0.45)));
+      D.thr = -55 + (100 - sens) * 0.45; lastDrawn = -1; setSens(sens);
+    } });
+    count.textContent = `${D.hits} picked · ${D.ign} ignored`;
+    return { el: cv, feed, count };
+  }
+
   // A panel for one module. P(...) addresses the strip; M(...) the module.
   function modulePanel(t, kind, m, i, P, K, T, S_, help, live, fns) {
     const M = (...p) => P('chain', i, ...p);
@@ -1117,8 +1194,23 @@
       const opts = none => [...(none ? [['', 'None']] : []), ...lists.builtin, ...lists.user];
       const loadBtn = slot => h('button', { class: 'mini', onclick: () => pickSample(s => { setParam(M(slot), s); openEditor(t); }) }, 'Load sample…');
       const flash = h('span', { class: 'trighit' });
-      live.mods[m.id] = { type: 'trigger', el: flash };
+      const scope = triggerScope(m.id, sens => {
+        setParam(M('sensitivity'), sens); edCtl.get(key(M('sensitivity')))?.set(sens);
+      });
+      live.mods[m.id] = { type: 'trigger', el: flash, feed: scope.feed };
+      const playBtn = h('button', { class: 'btn accent', onclick: () => {
+        if (S.tr.playing || S.tr.recording) return tr('stop');
+        // start where this channel has sound, so the display has something to show straight away
+        const ph = S.tr.playhead, cl = (S.session?.clips || []).filter(c => c.track === t && !c.mute).sort((a, b) => a.start - b.start);
+        if (cl.length && !cl.some(c => c.start <= ph && ph < c.start + c.length)) tr('locate', { pos: (cl.find(c => c.start > ph) || cl[0]).start });
+        tr('play');
+      } }, 'Play');
+      const paintPlay = () => { playBtn.textContent = S.tr.playing || S.tr.recording ? 'Stop' : 'Play'; };
+      paintPlay();
+      onWhile('transport', playBtn, paintPlay); onWhile('meters', playBtn, paintPlay);
       kids.push(
+        scope.el,
+        h('div', { class: 'frow' }, playBtn, scope.count, h('span', { class: 'grow' }), h('span', { class: 'hint' }, 'Green = picked · grey = ignored · drag up or down to set the threshold')),
         h('div', { class: 'frow' }, h('span', { class: 'lbl' }, 'Sample'), S_(M('sample'), opts(false)), loadBtn('sample'), flash),
         h('div', { class: 'frow' }, h('span', { class: 'lbl' }, 'Layer'), S_(M('sample2'), opts(true)), loadBtn('sample2')),
         h('div', { class: 'knobs' },
@@ -1237,13 +1329,13 @@
       // the chain list: a small activity bar beside each processor
       for (const [mid, bar] of Object.entries(live.nav || {})) {
         const v = mods[mid];
-        const amt = typeof v === 'number' ? Math.abs(v) : Array.isArray(v) ? Math.max(0, ...v.map(x => Math.abs(+x) || 0)) : 0;
+        const amt = typeof v === 'number' ? Math.abs(v) : Array.isArray(v) ? Math.max(0, ...v.map(x => Math.abs(+x) || 0)) : v && v.hit ? 10 : 0;
         bar.style.width = Math.min(100, amt * 8) + '%';
       }
       for (const [mid, ui] of Object.entries(live.mods || {})) {
         const v = mods[mid];
         if (ui.type === 'trigger') {
-          ui.el.classList.toggle('on', (v || 0) > 3);
+          if (v && typeof v === 'object') { ui.el.classList.toggle('on', !!v.hit); ui.feed(v); }
         } else if (ui.type === 'rider') {
           ui.el.textContent = typeof v === 'number' ? `riding ${v > 0 ? '+' : ''}${v.toFixed(1)} dB` : '';
         } else if (ui.type === 'bass') {

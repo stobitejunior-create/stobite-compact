@@ -210,6 +210,31 @@ class Trigger:
         self.det = None
         self.det_key = None
         self.flash = 0.0
+        self.ignored = 0
+        self.ready = {}            # (sample, tune) -> samples prepared ahead, never on the audio thread
+        # what the trigger display draws: only collected while its panel is open
+        self.watch = 0             # blocks left to keep collecting
+        self.bin = int(fs / 200)   # 5 ms per column
+        self.rec_abs = self.rec_n = 0
+        self.rec_i = np.zeros(0, np.float32)
+        self.rec_d = np.zeros(0, np.float32)
+        self.pk_i, self.pk_d, self.marks = [], [], []
+        self.thr_db = -32.5
+        self.floor_db = None
+
+    def prepare(self, p):
+        """Load and tune the samples now (from a settings change). Making them at the first hit would stall
+        the audio thread: the built-in kit takes about 80 ms to generate, and a block is only 5 ms."""
+        semis = round(float(p.get("tune", 0)), 2)
+        ready = {}
+        for spec in (p.get("sample"), p.get("sample2")):
+            if not spec:
+                continue
+            smp = load_sample(spec, self.fs)
+            if smp is not None and abs(semis) > 0.01:
+                smp = np.interp(np.arange(0, len(smp), 2 ** (semis / 12)), np.arange(len(smp)), smp).astype(np.float32)
+            ready[(spec, semis)] = smp          # None = missing file: don't look for it again on every hit
+        self.ready = ready
 
     def _detector(self, lo, hi):
         if pb is None:
@@ -245,15 +270,25 @@ class Trigger:
         wait = trigger_latency(p, fs) // sub
         if not hasattr(self, "cands"):
             self.cands, self.kabs = [], 0
+        watching = self.watch > 0
+        # the level this drum's hard hits have been: falls about 15 dB a minute, so one huge hit
+        # can't make the quiet section after it count as spill for long
+        self.loudest = getattr(self, "loudest", 0.0) * 10 ** (-0.25 * n / fs / 20)
+        self.thr_db = 20 * math.log10(max(thr, 1e-6))
         for k, v in enumerate(env):
             self.since += sub
             self.kabs += 1
             self.ring = (getattr(self, "ring", [])[-5:]) + [v]      # the last ~1.5 ms
             if self.cands and self.cands[0][0] <= self.kabs:
-                due, pk0 = self.cands.pop(0)
+                due, pk0, onset = self.cands.pop(0)
                 if max(self.ring) >= 0.45 * pk0 and self.since >= retrig:
                     hits.append((k * sub, pk0))
                     self.since = 0          # only a confirmed hit holds off the next one
+                    if watching:
+                        self.marks.append((onset, pk0, 1))
+                elif watching:
+                    self.ignored += 1
+                    self.marks.append((onset, pk0, 2))   # died away too soon: not a cymbal
             # a hit = over the threshold AND a sudden jump above the drum's recent level (a ringing
             # tail never jumps, so it can't fire again), and not too soon after the last one
             # compared with the level ~8 ms ago: a low kick takes a few ms to rise through the detector
@@ -267,16 +302,27 @@ class Trigger:
                 if pk >= floor:
                     if wait:
                         if not self.cands or self.kabs - (self.cands[-1][0] - wait) >= lag:
-                            self.cands.append([self.kabs + wait, pk])
+                            self.cands.append([self.kabs + wait, pk, self.rec_abs + k * sub])
                     else:
                         hits.append((k * sub, pk))
                         self.since = 0
+                        if watching:
+                            self.marks.append((self.rec_abs + k * sub, pk, 1))
+                elif watching:
+                    self.ignored += 1
+                    self.since = 0                 # (one mark per bleed, not one per step)
+                    self.marks.append((self.rec_abs + k * sub, pk, 0))   # too quiet: spill from another drum
             self.env = max(v, self.env * rel)
             self.hist[self.hi % lag] = self.env
             self.hi += 1
+        loud_now = getattr(self, "loudest", 0.0)
+        self.floor_db = 20 * math.log10(loud_now) - float(p.get("reject", 16)) if loud_now > 1e-6 else None
+        if watching:
+            self.watch -= 1
+            self._record(mono, d)
         dyn = float(np.clip(p.get("dynamics", 70), 0, 100)) / 100
         vol = 10 ** (float(p.get("volume", 0)) / 20)
-        semis = float(p.get("tune", 0))
+        semis = round(float(p.get("tune", 0)), 2)
         for at, pk in hits:
             self.hits += 1
             self.flash = 1.0
@@ -284,12 +330,11 @@ class Trigger:
             vel = min(1.0, pk / max(self.loudest, thr * 4))      # relative to the hardest recent hits
             g = vol * ((1 - dyn) + dyn * vel)
             for j, spec in enumerate(samples):
-                smp = load_sample(spec, fs)
+                if (spec, semis) not in self.ready:
+                    self.prepare(p)                # a safety net; normally done when the settings arrive
+                smp = self.ready.get((spec, semis))
                 if smp is None:
                     continue
-                if abs(semis) > 0.01:
-                    r = 2 ** (semis / 12)
-                    smp = np.interp(np.arange(0, len(smp), r), np.arange(len(smp)), smp).astype(np.float32)
                 lvl = 1.0 if j == 0 else 10 ** (float(p.get("volume2", -6)) / 20)
                 self.voices.append([smp, -at, g * lvl])
         out = np.zeros(n, np.float32)
@@ -320,9 +365,29 @@ class Trigger:
             y[:, 1:] = y[:, :1]
         return y
 
+    def _record(self, mono, d):
+        """One column per 5 ms of the sound coming in and of what the detector hears, for the display."""
+        self.rec_abs += len(mono)
+        i = np.concatenate([self.rec_i, np.abs(mono)])
+        e = np.concatenate([self.rec_d, np.abs(d)])
+        m = len(i) // self.bin
+        if m:
+            self.pk_i.extend(i[: m * self.bin].reshape(m, self.bin).max(axis=1).tolist())
+            self.pk_d.extend(e[: m * self.bin].reshape(m, self.bin).max(axis=1).tolist())
+            self.rec_n += m
+        self.rec_i, self.rec_d = i[m * self.bin:], e[m * self.bin:]
+
     def reading(self):
+        """Read by the meters while the panel is open: the newest columns and hits since the last read."""
         v, self.flash = self.flash, 0.0          # held until the meters read it, so no hit is missed
-        return 10.0 if v else 0.0
+        self.watch = int(self.fs / 128)          # about 2 s more; collecting stops by itself when the panel closes
+        db = lambda a: [int(round(20 * math.log10(max(x, 1e-4)))) for x in a]
+        out = {"hit": bool(v), "n": self.rec_n, "i": db(self.pk_i), "d": db(self.pk_d),
+               "m": [[int(pos // self.bin), int(round(20 * math.log10(max(pk, 1e-4)))), kind] for pos, pk, kind in self.marks],
+               "thr": round(self.thr_db, 1), "floor": None if self.floor_db is None else round(self.floor_db, 1),
+               "hits": self.hits, "ign": self.ignored, "rate": round(self.fs / self.bin)}
+        self.pk_i, self.pk_d, self.marks = [], [], []
+        return out
 
 
 class Rider:
@@ -487,6 +552,7 @@ class Effect:
         if k == "trigger":
             if not isinstance(self.dev, Trigger):
                 self.dev = Trigger(self.fs)
+            self.dev.prepare(p)
             return
         if k == "rider":
             if not isinstance(self.dev, Rider):

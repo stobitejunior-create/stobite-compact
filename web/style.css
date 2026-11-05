@@ -1,19 +1,50 @@
+/* Themes: Grey (the default, in the spirit of Logic Pro), Dark (a soft charcoal like Discord), Black (the deepest),
+   Light. Chosen in Setup → Appearance; the same names are used by the code that reads the palette for the canvases. */
 :root {
   --ease: cubic-bezier(.2, .8, .2, 1); --spring: cubic-bezier(.34, 1.4, .64, 1);
-  --bg: #0e0f11; --bg2: #15171a; --bg3: #1c1f23; --bg4: #262a30; --line: #2c3036; --line2: #3a3f47;
-  --text: #e8e9eb; --dim: #9aa0a8; --faint: #6b717a;
-  --accent: #f76b15; --accent2: #ffb366; --green: #3ecf6e; --yellow: #ffd23f; --red: #ff4d4f; --blue: #3aa0ff;
-  --solo: #ffd23f; --mute: #ff4d4f; --arm: #ff4d4f;
   --radius: 8px; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  --hdr1: #1a1c20; --hdr2: #131518; --well: #050607; --well2: #08090a; --fx-name: #3d4352; --glow: #2a1a10; --purple: #b18cff;
-  --accent-bg: #33302a; --accent-bg2: #1d1611; --accent-line: #4a3524;
-  --red-bg: #3a1416; --red-line: #6b2023; --red-text: #ffb3b4;
-  --green-bg: #17351f; --green-line: #285f37; --yellow-bg: #3a2a10; --yellow-line: #6b4c18; --yellow-text: #ffd79a;
-  --cv-bg: #0e0f11; --cv-row1: #111316; --cv-row2: #0f1113; --cv-sep: #1b1e22; --cv-grid: #1f2328; --cv-ruler: #15171a;
-  --cv-rule-line: #2c3036; --cv-text: #9aa0a8; --cv-label: #4b515a; --cv-wave: #d9dce0; --cv-wave-sel: #ffffff; --cv-muted: #1c1d20; --cv-tick: #16191c; --cv-lane: rgba(0,0,0,.35);
+  /* GREY: neutral mid-greys, lighter header bar, darker wells (meters, the timeline) */
+  --bg: #2c2c2e; --bg2: #363638; --bg3: #404042; --bg4: #4c4c4f; --line: #232325; --line2: #58585b;
+  --text: #e9e9eb; --dim: #aeaeb2; --faint: #7e7e83;
+  --accent: #f76b15; --accent2: #ffb366; --green: #4cd37b; --yellow: #ffd23f; --red: #ff5a5c; --blue: #4aa8ff;
+  --solo: #ffd23f; --mute: #ff5a5c; --arm: #ff5a5c;
+  --hdr1: #4a4a4d; --hdr2: #39393c; --well: #1d1d1f; --well2: #242426; --fx-name: #55596a; --glow: #3a2a1e; --purple: #b99aff;
+  --accent-bg: #4a3b2e; --accent-bg2: #3a2e25; --accent-line: #6e4c30;
+  --red-bg: #4a2a2c; --red-line: #7a3336; --red-text: #ffb8b9;
+  --green-bg: #26402e; --green-line: #3a6d49; --yellow-bg: #4a3b1e; --yellow-line: #7a5c24; --yellow-text: #ffd79a;
+  --cv-bg: #262628; --cv-row1: #2d2d2f; --cv-row2: #292a2c; --cv-sep: #202022; --cv-grid: #38383b; --cv-ruler: #39393c;
+  --cv-rule-line: #232325; --cv-text: #b4b4b9; --cv-label: #7e7e83; --cv-wave: #e4e4e6; --cv-wave-sel: #ffffff; --cv-muted: #333335; --cv-tick: #343436; --cv-lane: rgba(0,0,0,.32);
+  --knob-track: #232325; --knob-body: #3a3a3c; --knob-edge: #5a5a5e; --knob-edge-hover: #7c7c80; --knob-pointer: #f2f2f4;
+  --ed-back: #0006; --modal-back: rgba(0,0,0,.5);
   color-scheme: dark;
 }
-/* light mode: chosen in Setup → Appearance, or following the computer when set to Auto */
+/* DARK: soft charcoal-blue like Discord, easy for long evenings */
+:root[data-theme="dark"] {
+  --bg: #1e1f22; --bg2: #2b2d31; --bg3: #313338; --bg4: #3a3c42; --line: #232428; --line2: #43454c;
+  --text: #dbdee1; --dim: #b5bac1; --faint: #80848e;
+  --green: #3ecf6e; --red: #f2555a; --mute: #f2555a; --arm: #f2555a; --blue: #4f9dff;
+  --hdr1: #2b2d31; --hdr2: #25272b; --well: #17181b; --well2: #1c1d20; --fx-name: #43485c; --glow: #33261b;
+  --accent-bg: #3d3329; --accent-bg2: #2f2923; --accent-line: #5d4330;
+  --red-bg: #3f2528; --red-line: #6d2f33; --green-bg: #213a2a; --green-line: #34603f; --yellow-bg: #3d3220; --yellow-line: #6a5121;
+  --cv-bg: #2b2d31; --cv-row1: #2e3035; --cv-row2: #2b2d31; --cv-sep: #232428; --cv-grid: #393b41; --cv-ruler: #26282c;
+  --cv-rule-line: #3a3c42; --cv-text: #b5bac1; --cv-label: #80848e; --cv-wave: #dbdee1; --cv-muted: #26282c; --cv-tick: #33353b; --cv-lane: rgba(0,0,0,.3);
+  --knob-track: #26282c; --knob-body: #35373d; --knob-edge: #4e5058; --knob-edge-hover: #6d7079; --knob-pointer: #eceef0;
+  color-scheme: dark;
+}
+/* BLACK: the original deep black */
+:root[data-theme="black"] {
+  --bg: #0e0f11; --bg2: #15171a; --bg3: #1c1f23; --bg4: #262a30; --line: #2c3036; --line2: #3a3f47;
+  --text: #e8e9eb; --dim: #9aa0a8; --faint: #6b717a;
+  --green: #3ecf6e; --red: #ff4d4f; --mute: #ff4d4f; --arm: #ff4d4f; --blue: #3aa0ff;
+  --hdr1: #1a1c20; --hdr2: #131518; --well: #050607; --well2: #08090a; --fx-name: #3d4352; --glow: #2a1a10;
+  --accent-bg: #33302a; --accent-bg2: #1d1611; --accent-line: #4a3524;
+  --red-bg: #3a1416; --red-line: #6b2023; --green-bg: #17351f; --green-line: #285f37; --yellow-bg: #3a2a10; --yellow-line: #6b4c18;
+  --cv-bg: #0e0f11; --cv-row1: #111316; --cv-row2: #0f1113; --cv-sep: #1b1e22; --cv-grid: #1f2328; --cv-ruler: #15171a;
+  --cv-rule-line: #2c3036; --cv-text: #9aa0a8; --cv-label: #4b515a; --cv-wave: #d9dce0; --cv-muted: #1c1d20; --cv-tick: #16191c; --cv-lane: rgba(0,0,0,.35);
+  --knob-track: #2c3036; --knob-body: #1c1f23; --knob-edge: #3a3f47; --knob-edge-hover: #555b64; --knob-pointer: #e8e9eb;
+  --ed-back: #0008;
+  color-scheme: dark;
+}
 :root[data-theme="light"] {
   --bg: #f3f4f6; --bg2: #ffffff; --bg3: #eef0f3; --bg4: #e3e6eb; --line: #dde0e5; --line2: #c8ccd3;
   --text: #16181b; --dim: #5b616a; --faint: #8a9099;
@@ -25,22 +56,9 @@
   --green-bg: #e3f6ea; --green-line: #a7dfbc; --yellow-bg: #fff4d6; --yellow-line: #f0d48a; --yellow-text: #8a5d00;
   --cv-bg: #fafbfc; --cv-row1: #f3f5f8; --cv-row2: #fafbfc; --cv-sep: #e4e7eb; --cv-grid: #e3e6ea; --cv-ruler: #eef0f3;
   --cv-rule-line: #d7dbe1; --cv-text: #5b616a; --cv-label: #8a9099; --cv-wave: #2a2e34; --cv-wave-sel: #000000; --cv-muted: #e6e8eb; --cv-tick: #eceef2; --cv-lane: rgba(0,0,0,.05);
+  --knob-track: #d3d7dd; --knob-body: #ffffff; --knob-edge: #c4c9d1; --knob-edge-hover: #9aa1ac; --knob-pointer: #20242a;
+  --ed-back: #0004; --modal-back: rgba(0,0,0,.35);
   color-scheme: light;
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]):not([data-theme="light"]) {
-    --bg: #f3f4f6; --bg2: #ffffff; --bg3: #eef0f3; --bg4: #e3e6eb; --line: #dde0e5; --line2: #c8ccd3;
-    --text: #16181b; --dim: #5b616a; --faint: #8a9099;
-    --accent: #f26a12; --accent2: #b9520c; --green: #1e9e52; --yellow: #c48a00; --red: #e23b3d; --blue: #1f7fe0;
-    --solo: #f2c200; --mute: #e23b3d; --arm: #e23b3d;
-    --hdr1: #ffffff; --hdr2: #f4f5f7; --well: #e4e7ec; --well2: #f0f2f5; --fx-name: #c9d2e6; --glow: #ffe3cc; --purple: #7048d8;
-    --accent-bg: #fde9da; --accent-bg2: #fff1e6; --accent-line: #f3c7a3;
-    --red-bg: #fde7e7; --red-line: #f3b4b5; --red-text: #b4232a;
-    --green-bg: #e3f6ea; --green-line: #a7dfbc; --yellow-bg: #fff4d6; --yellow-line: #f0d48a; --yellow-text: #8a5d00;
-    --cv-bg: #fafbfc; --cv-row1: #f3f5f8; --cv-row2: #fafbfc; --cv-sep: #e4e7eb; --cv-grid: #e3e6ea; --cv-ruler: #eef0f3;
-    --cv-rule-line: #d7dbe1; --cv-text: #5b616a; --cv-label: #8a9099; --cv-wave: #2a2e34; --cv-wave-sel: #000000; --cv-muted: #e6e8eb; --cv-tick: #eceef2; --cv-lane: rgba(0,0,0,.05);
-    color-scheme: light;
-  }
 }
 :root[data-theme="light"] #top, :root[data-theme="light"] .sheet, :root[data-theme="light"] .modal-card { box-shadow: 0 1px 0 var(--line); }
 :root[data-theme="light"] .fader .cap::after { background: #333; }
@@ -323,7 +341,7 @@ button:active:not(:disabled), .badge:active { transform: scale(.94); }
 .fader.glide .cap { transition: top .22s var(--ease); }
 .fader.drag .cap { box-shadow: 0 0 0 2px var(--accent), 0 4px 10px #000c; }
 .fader .cap { transition: box-shadow .15s; }
-.knob:hover svg circle { stroke: #555b64; }
+.knob:hover svg circle { stroke: var(--knob-edge-hover); }
 .strip { transition: border-color .2s var(--ease), transform .2s var(--ease), box-shadow .2s var(--ease); }
 .strip:hover { border-color: var(--line2); box-shadow: 0 6px 20px -10px #000; }
 .strips { scroll-behavior: smooth; }
@@ -668,8 +686,8 @@ body.comparing #top { box-shadow: inset 0 -2px 0 var(--yellow); }
 .btn.clr.mute { background: var(--red-bg); color: var(--red-text); border-color: var(--red-line); }
 
 /* ---- channel editor: a window over a dimmed page, chain on the left, the selected part on the right */
-.ed-back { position: fixed; inset: 0; z-index: 19; background: #0008; backdrop-filter: blur(2px); animation: fadeIn .18s var(--ease); }
-:root[data-theme="light"] .ed-back { background: #0004; }
+.ed-back { position: fixed; inset: 0; z-index: 19; background: var(--ed-back, #0008); backdrop-filter: blur(2px); animation: fadeIn .18s var(--ease); }
+
 .ed-back[hidden] { display: none; }
 .sheet { top: 50%; transform: translate(-50%, -50%); height: min(780px, calc(100vh - 60px)); max-height: none; width: min(1120px, calc(100vw - 32px)); }
 .sheet:not([hidden]) { animation: edIn .26s var(--spring); }
@@ -792,3 +810,18 @@ body.locked .view.on::before { content: "Mix locked for the service"; position: 
 
 .export-pill { background: var(--accent-bg); color: var(--accent); border-color: var(--accent-line); cursor: pointer; font-variant-numeric: tabular-nums; }
 .export-pill[hidden] { display: none; }
+
+/* theme picker in Setup → Appearance: each card previews its own palette */
+.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 6px 2px 2px; }
+.theme-card { text-align: left; display: grid; gap: 4px; padding: 10px; border-radius: 10px; background: var(--bg3); border: 1.5px solid var(--line); cursor: pointer; }
+.theme-card small { color: var(--dim); font-size: 11px; }
+.theme-card.on { border-color: var(--accent); background: var(--accent-bg); }
+.theme-sw { display: flex; height: 38px; border-radius: 6px; overflow: hidden; border: 1px solid #0003; margin-bottom: 4px; }
+.theme-sw i { flex: 1; }
+.theme-sw[data-t="grey"] i:nth-child(1) { background: #2c2c2e; } .theme-sw[data-t="grey"] i:nth-child(2) { background: #404042; } .theme-sw[data-t="grey"] i:nth-child(3) { background: #f76b15; }
+.theme-sw[data-t="dark"] i:nth-child(1) { background: #1e1f22; } .theme-sw[data-t="dark"] i:nth-child(2) { background: #313338; } .theme-sw[data-t="dark"] i:nth-child(3) { background: #f76b15; }
+.theme-sw[data-t="black"] i:nth-child(1) { background: #0e0f11; } .theme-sw[data-t="black"] i:nth-child(2) { background: #1c1f23; } .theme-sw[data-t="black"] i:nth-child(3) { background: #f76b15; }
+.theme-sw[data-t="light"] i:nth-child(1) { background: #f3f4f6; } .theme-sw[data-t="light"] i:nth-child(2) { background: #ffffff; } .theme-sw[data-t="light"] i:nth-child(3) { background: #f26a12; }
+
+/* drum trigger live display */
+.trigscope { display: block; width: 100%; height: 130px; border-radius: 6px; border: 1px solid var(--line); cursor: ns-resize; touch-action: none; margin-bottom: 6px; }

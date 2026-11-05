@@ -6,7 +6,10 @@ import math
 import glob
 import json
 import os
+import re
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -50,6 +53,37 @@ def plugin_dirs():
         pf = os.environ.get("CommonProgramFiles", r"C:\Program Files\Common Files")
         return [(os.path.join(pf, "VST3"), "**/*.vst3")]
     return [(os.path.expanduser("~/.vst3"), "*.vst3"), ("/usr/lib/vst3", "*.vst3")]
+
+
+def friendly_error(ex):
+    """What to show on screen. Messages written for people pass through; programmers' ones get translated."""
+    text = str(ex)
+    if isinstance(ex, FileNotFoundError):
+        return "That file or project no longer exists."
+    if isinstance(ex, socket.gaierror):
+        return "Can't find that address on the network."
+    if isinstance(ex, KeyError):
+        return "Something was missing from that request."
+    if isinstance(ex, ValueError) and ("invalid literal" in text or "could not convert" in text):
+        return "That value isn't valid."
+    if text.startswith("Error opening"):
+        return "Couldn't read that audio file. It may be missing or damaged."
+    return text
+
+
+# who may talk to this server: pages it served itself. Without this, any website open in a browser on this
+# computer could send it commands (delete a project, change the mix), because it listens on localhost.
+_HOST_OK = re.compile(r"^(localhost|\[[0-9a-fA-F:.]+\]|[0-9.]+|[^.]+|.*\.(local|lan|home|localhost))(:\d+)?$", re.I)
+
+
+def _foreign_request(request):
+    h = request.headers
+    if h.get("Sec-Fetch-Site", "same-origin") not in ("same-origin", "none"):
+        return True
+    origin = h.get("Origin")
+    if origin and origin != "null" and origin.split("://", 1)[-1] != request.host:
+        return True
+    return not _HOST_OK.match(request.host or "")   # a website's own name pointed at this computer (DNS rebinding)
 
 
 class App:
@@ -104,6 +138,8 @@ class App:
                 self.clients.discard(ws)
                 self.audio_clients.discard(ws)
                 self._ws_lock.pop(ws, None)
+                # hang up, so the window notices, reconnects and gets the whole state again when it recovers
+                asyncio.ensure_future(ws.close())
 
     async def broadcast(self, msg, skip=None):
         data = json.dumps(msg, separators=(",", ":"))
@@ -151,7 +187,6 @@ class App:
 
     async def meter_loop(self):
         e = self.engine
-        last_tr = 0
         while True:
             # 20 meter updates a second while there's sound, 4 while the engine sleeps
             await asyncio.sleep(0.25 if e.asleep else 0.05)
@@ -196,6 +231,8 @@ class App:
             if e.mixer.focus is not None and not e.asleep:
                 msg["csp"] = e.mixer.focus_ring.spectrum(e.sr)
             msg["ds"] = [round(v, 1) for v in m["ds"]]
+            if m.get("mods"):
+                msg["mods"] = m["mods"]        # live readings of each effect on the strip open in the editor
             a = e.last_auto if e.playing else None
             if a:
                 msg["au"] = {"f": a["fader"], "p": a["pan"], "m": a["mute"], "M": a["master"]}
@@ -266,7 +303,7 @@ class App:
                     await self.handle(ws, json.loads(msg.data))
                 except Exception as ex:
                     traceback.print_exc()
-                    await self._send(ws, json.dumps({"t": "error", "msg": str(ex)}))
+                    await self._send(ws, json.dumps({"t": "error", "msg": friendly_error(ex)}))
         finally:
             self.clients.discard(ws)
             self.audio_clients.discard(ws)
@@ -398,6 +435,18 @@ class App:
                 d = body.get("export_dir")
                 if d and not (os.path.isdir(d) and os.access(d, os.W_OK)):
                     raise RuntimeError("Can't save there: that folder doesn't exist or isn't writable.")
+                # numbers must be numbers (a typo here used to be saved and then stop the audio from starting)
+                for k, (lo, hi, kind) in {"sr": (8000, 192000, int), "block": (32, 8192, int), "main_l": (-1, 255, int), "main_r": (-1, 255, int),
+                                          "mon_l": (-1, 255, int), "mon_r": (-1, 255, int), "direct_offset": (-1, 255, int),
+                                          "click_db": (-60, 12, float), "hp_amount": (0, 100, float)}.items():
+                    if k in body:
+                        try:
+                            v = kind(body[k])
+                        except (TypeError, ValueError):
+                            raise RuntimeError(f"“{k}” needs a number.")
+                        if not lo <= v <= hi:
+                            raise RuntimeError(f"“{k}” must be between {lo} and {hi}.")
+                        body[k] = v
                 restart = any(k in body for k in ("input", "output", "sr", "block"))
                 restart_cables = any(k in body for k in ("cable_out", "cable_in"))
                 if "remote" in body:
@@ -449,6 +498,8 @@ class App:
                 return web.json_response({"ok": True, "where": where})
             if name == "session-open":
                 loop = asyncio.get_running_loop()
+                if not os.path.exists(os.path.join(home_dir(), "Sessions", safe_name(body.get("name") or ""), "session.json")):
+                    raise RuntimeError("That project no longer exists.")
                 await loop.run_in_executor(None, e.open_session, body["name"], self._loading(loop, "open"))
                 return web.json_response({"ok": True})
             if name == "save":
@@ -529,6 +580,9 @@ class App:
                 return web.json_response({"start": rec.start_pos, "n": n, "peaks": chunk})
             if name == "peaks":
                 spp = int(q.get("spp", 1024))
+                root = os.path.realpath(e.session.dir)
+                if not os.path.realpath(os.path.join(root, q["file"])).startswith(root + os.sep):
+                    raise web.HTTPForbidden()
                 data = (await asyncio.get_running_loop().run_in_executor(None, e.session.peaks, q["file"], spp)).tobytes()
                 return web.Response(body=data, content_type="application/octet-stream",
                                     headers={"Cache-Control": "max-age=3600"})
@@ -795,15 +849,15 @@ class App:
                 e.promote()   # importing into "no project" makes a real project first
                 async for part in reader:
                     if part.filename:
-                        suffix = os.path.splitext(part.filename)[1]
-                        fd, tmp = tempfile.mkstemp(suffix=suffix)
-                        with os.fdopen(fd, "wb") as f:
-                            while chunk := await part.read_chunk():
-                                f.write(chunk)
-                        final = os.path.join(os.path.dirname(tmp), part.filename)
-                        os.replace(tmp, final)
-                        await asyncio.get_running_loop().run_in_executor(None, e.session.import_file, final, track, start)
-                        os.remove(final)
+                        folder = tempfile.mkdtemp()      # its own folder, and only the name's last part: a crafted name can't escape
+                        final = os.path.join(folder, os.path.basename(part.filename.replace("\\", "/")) or "import.wav")
+                        try:
+                            with open(final, "wb") as f:
+                                while chunk := await part.read_chunk(1 << 20):
+                                    f.write(chunk)
+                            await asyncio.get_running_loop().run_in_executor(None, e.session.import_file, final, track, start)
+                        finally:
+                            shutil.rmtree(folder, ignore_errors=True)
                 e.dirty = True
                 await self._push("session")
                 return web.json_response({"ok": True})
@@ -819,10 +873,10 @@ class App:
                 path = (e.export_job["file"] if (what == "export" and e.export_job) else
                         portable.presets_dir() if what == "presets" else
                         getattr(self, "last_settings", None) if what == "settings" else
-                        os.path.join(portable.presets_dir("Mixes"), q.get("name", "")) if what == "mix" else e.session.dir)
+                        os.path.join(portable.presets_dir("Mixes"), portable._clean(q.get("name", ""))) if what == "mix" else e.session.dir)
                 if request.remote in ("127.0.0.1", "::1") and path:
                     if sys.platform == "darwin":
-                        os.system(f'open -R "{path}"')
+                        subprocess.Popen(["open", "-R", path])     # no shell: a name can't become a command
                     elif sys.platform == "win32":
                         os.startfile(os.path.dirname(path) if os.path.isfile(path) else path)
                 return web.json_response({"ok": True})
@@ -831,11 +885,13 @@ class App:
             raise
         except Exception as ex:
             traceback.print_exc()
-            return web.json_response({"error": str(ex)}, status=400)
+            return web.json_response({"error": friendly_error(ex)}, status=400)
 
     # ------------------------------------------------------------- auth
     @web.middleware
     async def auth(self, request, handler):
+        if _foreign_request(request):
+            raise web.HTTPForbidden(text="Only Stobite Compact's own pages can use this.")
         pin = self.engine.cfg.get("pin") or ""
         local = request.remote in ("127.0.0.1", "::1")
         if not pin or local or request.cookies.get("stobite_pin") == pin:

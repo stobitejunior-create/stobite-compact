@@ -90,10 +90,10 @@ function Knob({ label = '', min = 0, max = 1, value = 0, def, log = false, step 
     return `M${x0},${y0} A${r},${r} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${x1},${y1}`;
   };
   const A0 = Math.PI * 0.75, A1 = Math.PI * 2.25;
-  svg.innerHTML = `<path d="${arc(A0, A1)}" stroke="#2c3036" stroke-width="3.5" fill="none" stroke-linecap="round"/>
+  svg.innerHTML = `<path d="${arc(A0, A1)}" style="stroke:var(--knob-track)" stroke-width="3.5" fill="none" stroke-linecap="round"/>
     <path class="v" stroke="${color}" stroke-width="3.5" fill="none" stroke-linecap="round"/>
-    <circle cx="${cx}" cy="${cy}" r="${r - 5}" fill="#1c1f23" stroke="#3a3f47"/>
-    <line class="p" stroke="#e8e9eb" stroke-width="2" stroke-linecap="round"/>`;
+    <circle cx="${cx}" cy="${cy}" r="${r - 5}" style="fill:var(--knob-body);stroke:var(--knob-edge)"/>
+    <line class="p" style="stroke:var(--knob-pointer)" stroke-width="2" stroke-linecap="round"/>`;
   const vEl = h('div', { class: 'kv' });
   const el = h('div', { class: 'knob' + (big ? ' big' : ''), title: label }, svg, vEl, label ? h('div', { class: 'kl' }, label) : null);
   let cur = value;

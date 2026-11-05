@@ -11,7 +11,6 @@ vectorised call ("stages"); each module keeps its own state in a slot.
 Buses and the master: each module is its own stereo processor (BusChain).
 """
 import copy
-import math
 import random
 import string
 
@@ -373,6 +372,9 @@ BANKS = {"comp": CompBank, "gate": GateBank, "deess": DeEssBank, "trans": TransB
 OBJECTS = ("dyneq", "tune", "plugin")
 
 
+TAIL_TYPES = {"reverb", "delay", "chorus", "flanger", "phaser", "pitch", "trigger", "plugin"}
+
+
 class ChannelChains:
     """Runs every channel's chain, grouped into vectorised stages."""
 
@@ -438,6 +440,8 @@ class ChannelChains:
                     g[1].append(self.banks[t].slot[m["id"]] if t in BANKS else m["id"])
             stages.append([(t, np.array(cols), (np.array(sl) if t in BANKS else sl)) for t, (cols, sl) in groups.items()])
         self.stages = stages
+        # modules that keep sounding after their input stops: these channels mustn't go to sleep straight away
+        self.has_tail = np.array([any(m.get("on", True) and m.get("type") in TAIL_TYPES for m in (ch.get("chain") or [])) for ch in channels])
 
     def _object(self, m):
         t, mid = m["type"], m["id"]
@@ -640,6 +644,8 @@ class BusChain:
                 mods[m["id"]] = p.gr
             elif t == "dyneq":
                 mods[m["id"]] = [b.get("_live", 0) for b in p.bands]
+            elif t in EFFECTS and getattr(getattr(p, "dev", None), "reading", None):
+                mods[m["id"]] = p.dev.reading()
         return gr, lim, mbc, mods
 
     def first(self, kind):

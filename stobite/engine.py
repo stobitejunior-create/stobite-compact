@@ -20,6 +20,7 @@ from .mixer import Mixer, Insert
 from .cables import CableIO
 from .inputs import ExtraInputs
 from .guard import LoopGuard
+from .hpcorrect import HeadphoneEQ
 from .listen import ListenOut, pick_listen_device, is_wing_name
 from .session import Session, Reader, Recorder, home_dir, list_sessions, safe_name, scratch_dir, recover_interrupted
 
@@ -36,7 +37,7 @@ DEFAULT_CFG = {
     "wing_return": False,
     "listen": "auto",                       # where to hear the mix when the WING is the interface
     "stream_out": "",
-    "theme": "auto",
+    "theme": "grey",
     "hp_model": "", "hp_amount": 100,       # headphone correction (what you hear only)
     "metronome": False, "countin": False, "click_db": -12.0,   # click: headphones / speakers only                        # Auto (follow the computer) / light / dark                       # a second copy of the mix for OBS / Zoom, e.g. a virtual cable
 }
@@ -627,7 +628,6 @@ class Engine:
             hp = self.cfg.get("hp_model")
             if hp:                                # headphone correction: only what you listen on
                 if self.hp_eq is None or self.hp_eq.sr != self.sr:
-                    from .hpcorrect import HeadphoneEQ
                     self.hp_eq = HeadphoneEQ(self.sr)
                 hear = self.hp_eq.process(hear, hp, float(self.cfg.get("hp_amount", 100)))
             click = self._click(frames)

@@ -243,7 +243,6 @@ class Insert:
             return out
         for key, prm in self.plugin.parameters.items():
             try:
-                rng = prm.range
                 out.append({"key": key, "name": prm.name, "value": float(prm.raw_value),
                             "text": str(prm.string_value), "min": 0.0, "max": 1.0,
                             "label": getattr(prm, "label", "") or ""})
@@ -772,6 +771,10 @@ class Mixer:
         # channels silent for half a second skip their per-channel filters (their audio is already ~zero)
         self.ch_quiet = np.where(pk_in < CH_QUIET, self.ch_quiet + frames, 0)
         dormant = self.ch_quiet > self.fs * 0.5
+        # ...except a reverb, delay or drum sample still ringing out (they get 12 s), and the channel open in the editor
+        dormant &= ~(self.chains.has_tail & (self.ch_quiet <= self.fs * 12))
+        if self.focus is not None and 0 <= self.focus < self.nch:
+            dormant[self.focus] = False
         # ---- channel strips
         x *= c["pre"]
         # before / after: the same channels, faders and routing with no processing at all

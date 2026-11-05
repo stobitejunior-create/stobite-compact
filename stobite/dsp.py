@@ -278,7 +278,6 @@ class Dynamics:
         self.set_params([{} for _ in range(nch)])
 
     def set_params(self, strips):
-        n = self.nch
         g = lambda k, sub, d: np.array([float(s.get(k, {}).get(sub, d)) for s in strips])
         on = lambda k: np.array([bool(s.get(k, {}).get("on")) for s in strips])
         fs = self.fs

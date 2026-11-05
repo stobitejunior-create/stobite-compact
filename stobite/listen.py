@@ -5,8 +5,6 @@ are often patched into channels, and sending the mix there makes a feedback loop
 stream reads the WING's inputs and this second stream plays the mix on the computer's own output.
 Its clock is independent, so a short buffer absorbs the difference.
 """
-import numpy as np
-
 try:
     import sounddevice as sd
 except Exception:  # pragma: no cover
